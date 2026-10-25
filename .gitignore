@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.DS_Store
+# your videos and analysis results stay on this Mac
+data/
+out/
+# rebuilt from the .part* files on first use
+models/tracknetv3/TrackNet_best.pt
+*.tmp

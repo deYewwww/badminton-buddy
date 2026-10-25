@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>羽球 HUD 編輯器</title>
+<style>
+  :root { --bg:#0d1418; --panel:#16222a; --edge:#2b3d48; --text:#e8eef2; --dim:#8da2ae; --accent:#36c8f0; --good:#5be0a0; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system, "PingFang TC", "Heiti TC", sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 16px; letter-spacing:.5px; }
+  h1 small { color:var(--dim); font-weight:normal; font-size:14px; margin-left:8px; }
+  section { background:var(--panel); border:1px solid var(--edge); border-radius:10px; padding:16px; margin-bottom:16px; }
+  section.off { opacity:.45; pointer-events:none; }
+  h2 { font-size:17px; margin:0 0 10px; color:var(--accent); }
+  h2 span { color:var(--dim); font-weight:normal; font-size:13px; margin-left:6px; }
+  button, select, input[type=text] { font:inherit; color:var(--text); background:#1e2f39; border:1px solid var(--edge); border-radius:7px; padding:7px 12px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#06222c; border-color:var(--accent); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
+  .hint { color:var(--dim); font-size:13px; }
+  .ok { color:var(--good); } .err { color:var(--bad); }
+  #drop { border:2px dashed var(--edge); border-radius:10px; padding:26px; text-align:center; color:var(--dim); cursor:pointer; }
+  #drop.over { border-color:var(--accent); color:var(--text); }
+  .calib { display:flex; gap:12px; align-items:flex-start; }
+  #canvasWrap { position:relative; flex:1; min-width:0; overflow:hidden; border-radius:8px; background:#0a0f12; touch-action:none; }
+  .side { width:150px; flex:none; }
+  #mini { width:150px; height:300px; background:#0a0f12; border-radius:8px; cursor:pointer; }
+  @media (max-width:640px) { .calib { flex-direction:column; } }
+  canvas { display:block; width:100%; }
+  .names { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:8px; }
+  .names label { display:flex; gap:8px; align-items:center; }
+  .names input { flex:1; min-width:0; }
+  .dot { width:12px; height:12px; border-radius:50%; display:inline-block; flex:none; }
+  progress { width:100%; height:12px; accent-color:var(--accent); }
+  video { width:100%; max-height:75vh; background:#000; border-radius:8px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--edge); text-align:left; }
+  th { color:var(--dim); font-weight:normal; }
+  #list button { margin:0 6px 6px 0; }
+  input[type=range] { flex:1; min-width:160px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>羽球 HUD 編輯器 <small>上傳 → 校正球場 → 名字 → 分析 → 修正比分</small></h1>
+
+  <section id="s1">
+    <h2>① 影片 <span>手機固定拍攝，正後方或後方 45° 都可以</span></h2>
+    <div id="drop">把影片拖到這裡，或點一下選擇檔案（.mp4 / .mov）<input id="file" type="file" accept="video/*" hidden></div>
+    <div class="row"><progress id="upProg" value="0" max="1" hidden></progress></div>
+    <div id="list" class="row"></div>
+  </section>
+
+  <section id="s2" class="off">
+    <h2>② 校正球場 <span>拖動 1–4 號點，讓黃線對齊地上的白線</span></h2>
+    <div class="row">
+      <button id="auto">自動偵測</button>
+      <button id="snap">貼齊白線</button>
+      <button id="reset">重設</button>
+      <span class="hint">畫面：</span><input id="t" type="range" min="-1" max="1" step="0.1" value="-1"><span id="tLabel" class="hint">背景</span>
+      <button id="save" class="primary">儲存校正</button>
+    </div>
+    <div class="row hint" id="calMsg">選好影片後會自動偵測球場。1–4 號點是畫面裡看得到的白線交叉點：拖動它們調整；選一個點後可用方向鍵微調（Shift = 10 px），或點一下別的小黃點，改用那個交叉點。</div>
+    <div class="calib"><div id="canvasWrap"><canvas id="cv"></canvas></div>
+      <div class="side"><canvas id="mini" width="150" height="300"></canvas>
+        <div class="hint">選一個號碼點後，在這裡點交叉點：指定它是球場上的哪一點</div></div></div>
+  </section>
+
+  <section id="s3" class="off">
+    <h2>③ 球員名字 <span>近端（靠鏡頭）是我隊，左邊是 1 號</span></h2>
+    <div class="names" id="names"></div>
+  </section>
+
+  <section id="s4" class="off">
+    <h2>④ 分析</h2>
+    <div class="row"><button id="run" class="primary">開始分析</button><span id="runMsg" class="hint"></span></div>
+    <progress id="runProg" value="0" max="1"></progress>
+  </section>
+
+  <section id="s5" class="off">
+    <h2>⑤ 結果 <span>得分方是自動猜的，猜錯就在表格裡改，再按「套用修正」</span></h2>
+    <video id="vid" controls playsinline></video>
+    <div class="row"><a id="dl" download="hud.mp4"><button>下載 HUD 影片</button></a>
+      <button id="rerender">套用修正並重新輸出</button></div>
+    <table><thead><tr><th>#</th><th>開始</th><th>時長</th><th>拍數</th><th>得分方</th><th>比分</th><th>落點</th></tr></thead>
+      <tbody id="rallies"></tbody></table>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const COLORS = {P1:"#36c8f0", P2:"#5be0a0", P3:"#b48cff", P4:"#ffb050"};
+const LABELS = ["近左", "近右", "遠右", "遠左"];
+const W_C = 6.10, L_C = 13.40, NET = 6.70;
+const LINES = [];
+for (const x of [0, 0.46, W_C - 0.46, W_C]) LINES.push([[x, 0], [x, L_C]]);
+for (const y of [0, 0.76, NET - 1.98, NET + 1.98, L_C - 0.76, L_C]) LINES.push([[0, y], [W_C, y]]);
+LINES.push([[W_C / 2, 0], [W_C / 2, NET - 1.98]], [[W_C / 2, NET + 1.98], [W_C / 2, L_C]]);
+const NETL = [[0, NET], [W_C, NET]];
+const CORN = [[0, 0], [W_C, 0], [W_C, L_C], [0, L_C]];
+const PTS = [];  // every painted-line intersection: candidate control points
+for (const x of [0, 0.46, W_C / 2, W_C - 0.46, W_C]) for (const y of [0, 0.76, NET - 1.98, NET + 1.98, L_C - 0.76, L_C]) PTS.push([x, y]);
+// G: court (m) -> image (px). handles: 4 control points {c: court m, p: image px} that are inside
+// the frame; dragging one re-solves G from all 4, so nothing ever has to be dragged off-screen.
+let M = null, img = new Image(), G = null, handles = [], sel = -1, drag = -1, poll = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+// ---- matches & upload
+async function loadList() {
+  const l = await api("/api/matches");
+  $("#list").innerHTML = l.length ? '<span class="hint">之前的影片：</span>' : "";
+  for (const m of l.slice(0, 12)) {
+    const b = document.createElement("button");
+    b.textContent = (m.name || m.id) + (m.done ? " ✓" : "");
+    b.onclick = () => openMatch(m.id);
+    $("#list").appendChild(b);
+  }
+}
+$("#drop").onclick = () => $("#file").click();
+$("#drop").ondragover = e => { e.preventDefault(); $("#drop").classList.add("over"); };
+$("#drop").ondragleave = () => $("#drop").classList.remove("over");
+$("#drop").ondrop = e => { e.preventDefault(); $("#drop").classList.remove("over"); if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]); };
+$("#file").onchange = e => e.target.files[0] && upload(e.target.files[0]);
+function upload(file) {
+  const x = new XMLHttpRequest();
+  x.open("POST", "/api/upload?name=" + encodeURIComponent(file.name));
+  $("#upProg").hidden = false;
+  x.upload.onprogress = e => $("#upProg").value = e.loaded / e.total;
+  x.onload = async () => {
+    $("#upProg").hidden = true;
+    const j = JSON.parse(x.responseText);
+    if (x.status !== 200) return alert(j.error);
+    await loadList(); openMatch(j.id);
+  };
+  x.send(file);
+}
+
+async function openMatch(id) {
+  M = await api("/api/match?id=" + id);
+  for (const s of ["#s2", "#s3", "#s4"]) $(s).classList.remove("off");
+  $("#t").max = Math.max(0, M.duration - 0.1).toFixed(1);
+  $("#t").value = -1;
+  names(M.names);
+  G = null; handles = []; sel = -1;
+  await loadFrame();
+  if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。", "ok"); }
+  else autoDetect();
+  showResult(M.done);
+}
+
+// ---- calibration canvas
+const cv = $("#cv"), ctx = cv.getContext("2d");
+let S = 1, PX = 0, PY = 0;  // image px -> canvas px: PX + x*S
+function layout() {
+  if (!M) return;
+  const wrapW = $("#canvasWrap").clientWidth, pad = 0.04;
+  const maxH = window.innerHeight * 0.72;
+  S = Math.min(wrapW / (M.w * (1 + 2 * pad)), maxH / (M.h * (1 + 2 * pad)));
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(M.w * (1 + 2 * pad) * S), ch = Math.round(M.h * (1 + 2 * pad) * S);
+  cv.style.width = cw + "px"; cv.style.height = ch + "px";
+  cv.width = cw * dpr; cv.height = ch * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  PX = M.w * pad * S; PY = M.h * pad * S;
+  draw();
+}
+window.onresize = layout;
+async function loadFrame() {
+  const t = +$("#t").value;
+  $("#tLabel").textContent = t < 0 ? "背景" : fmt(t);
+  await new Promise(ok => { img.onload = ok; img.src = `/api/frame?id=${M.id}&t=${t}`; });
+  layout();
+}
+$("#t").onchange = loadFrame;
+
+function homography(src, dst) {  // 4 point pairs -> 3x3 (row-major array of 9)
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+  }
+  for (let c = 0; c < 8; c++) {  // Gaussian elimination with pivoting
+    let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]]; [b[c], b[p]] = [b[p], b[c]];
+    if (Math.abs(A[c][c]) < 1e-12) return null;
+    for (let r = 0; r < 8; r++) if (r !== c) {
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < 8; k++) A[r][k] -= f * A[c][k];
+      b[r] -= f * b[c];
+    }
+  }
+  return [...b.map((v, i) => v / A[i][i]), 1];
+}
+const proj = (G, p) => { const w = G[6] * p[0] + G[7] * p[1] + G[8]; return [(G[0] * p[0] + G[1] * p[1] + G[2]) / w, (G[3] * p[0] + G[4] * p[1] + G[5]) / w]; };
+const front = (G, p) => (G[6] * p[0] + G[7] * p[1] + G[8]) * (G[6] * W_C / 2 + G[7] * NET + G[8]) > 0;
+const toC = p => [PX + p[0] * S, PY + p[1] * S];
+const corners = () => G && CORN.map(c => proj(G, c));
+const inFrame = (p, m = 0.02) => p[0] >= M.w * m && p[0] <= M.w * (1 - m) && p[1] >= M.h * m && p[1] <= M.h * (1 - m);
+const visible = () => G ? PTS.filter(c => front(G, c) && inFrame(proj(G, c))) : [];
+function area(ps) { let a = 0; ps.forEach((p, i) => { const q = ps[(i + 1) % ps.length]; a += p[0] * q[1] - q[0] * p[1]; }); return Math.abs(a) / 2; }
+const hullArea = ([a, b, c, d]) => Math.max(area([a, b, c, d]), area([a, b, d, c]), area([a, c, b, d]));
+function setCorners(c) { G = homography(CORN, c); pickHandles(); draw(); }
+function pickHandles() {
+  // the 4 visible intersections spanning the largest area on screen (and a real area on court)
+  const vis = visible(), n = vis.length;
+  let best = null, ba = 0;
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) for (let l = k + 1; l < n; l++) {
+    const c = [vis[i], vis[j], vis[k], vis[l]];
+    const tri = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]].map(t => area(t.map(q => c[q])));
+    if (Math.min(...tri) < 0.5) continue;  // 3 points on one court line: the 4 can't fix the plane
+    const a = hullArea(c.map(q => proj(G, q)));
+    if (a > ba) { ba = a; best = c; }
+  }
+  handles = (best || CORN).map(c => ({c, p: proj(G, c)}));
+  sel = -1;
+}
+function resolve() { const g = homography(handles.map(h => h.c), handles.map(h => h.p)); if (g) G = g; }
+
+function draw() {
+  ctx.fillStyle = "#2a3238"; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (img.complete) ctx.drawImage(img, PX, PY, M.w * S, M.h * S);
+  if (!G) return;
+  ctx.save(); ctx.beginPath(); ctx.rect(PX, PY, M.w * S, M.h * S); ctx.clip();
+  ctx.lineWidth = 2; ctx.strokeStyle = "#ffe14a";
+  for (const [a, b] of LINES) seg(a, b);
+  ctx.setLineDash([6, 5]); ctx.strokeStyle = "#ff8a3d"; seg(...NETL); ctx.setLineDash([]);
+  ctx.fillStyle = "#ffe14a";
+  for (const c of visible()) { const [x, y] = toC(proj(G, c)); ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill(); }
+  ctx.restore();
+  handles.forEach((h, i) => {
+    const [x, y] = toC(h.p);
+    ctx.beginPath(); ctx.arc(x, y, i === sel ? 12 : 10, 0, 7);
+    ctx.fillStyle = i === sel ? "#ff4a6e" : "#36c8f0"; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke();
+    ctx.font = "bold 13px sans-serif"; ctx.fillStyle = "#06222c"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(i + 1, x, y + 1); ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+  });
+  if (drag >= 0) loupe(handles[drag].p);
+  drawMini();
+}
+// top-down court: which intersection each numbered point stands for; click to reassign
+const mini = $("#mini"), mctx = mini.getContext("2d");
+const MS = 20, MX = 14, MY = 16;  // px per metre, margins; near baseline at the bottom
+const toM = c => [MX + c[0] * MS, MY + (L_C - c[1]) * MS];
+function drawMini() {
+  mctx.fillStyle = "#0a0f12"; mctx.fillRect(0, 0, mini.width, mini.height);
+  mctx.strokeStyle = "#8da2ae"; mctx.lineWidth = 1;
+  for (const [a, b] of LINES) { mctx.beginPath(); mctx.moveTo(...toM(a)); mctx.lineTo(...toM(b)); mctx.stroke(); }
+  mctx.setLineDash([4, 3]); mctx.strokeStyle = "#ff8a3d"; mctx.beginPath(); mctx.moveTo(...toM(NETL[0])); mctx.lineTo(...toM(NETL[1])); mctx.stroke(); mctx.setLineDash([]);
+  mctx.fillStyle = "#ffe14a";
+  for (const c of PTS) { const [x, y] = toM(c); mctx.beginPath(); mctx.arc(x, y, 2.5, 0, 7); mctx.fill(); }
+  mctx.font = "10px sans-serif"; mctx.fillStyle = "#8da2ae"; mctx.fillText("遠端", 60, 11); mctx.fillText("近端（鏡頭）", 44, mini.height - 3);
+  handles.forEach((h, i) => {
+    const [x, y] = toM(h.c);
+    mctx.beginPath(); mctx.arc(x, y, i === sel ? 9 : 8, 0, 7);
+    mctx.fillStyle = i === sel ? "#ff4a6e" : "#36c8f0"; mctx.fill();
+    mctx.font = "bold 11px sans-serif"; mctx.fillStyle = "#06222c"; mctx.textAlign = "center"; mctx.textBaseline = "middle";
+    mctx.fillText(i + 1, x, y + 1); mctx.textAlign = "start"; mctx.textBaseline = "alphabetic";
+  });
+}
+mini.onclick = e => {
+  if (sel < 0) return msg("先在畫面上點選一個號碼點，再在小圖上點它所在的交叉點。");
+  const r = mini.getBoundingClientRect(), p = [(e.clientX - r.left) * mini.width / r.width, (e.clientY - r.top) * mini.height / r.height];
+  let c = null, bd = 10;
+  for (const q of PTS) { const m = toM(q), d = Math.hypot(m[0] - p[0], m[1] - p[1]); if (d < bd) { bd = d; c = q; } }
+  if (!c || handles.some((h, i) => i !== sel && h.c === c)) return;
+  const old = handles[sel].c;
+  handles[sel].c = c;
+  const g = homography(handles.map(h => h.c), handles.map(h => h.p));
+  const tri = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]].map(t => area(t.map(q => handles[q].c)));
+  if (!g || Math.min(...tri) < 0.5) { handles[sel].c = old; return msg("這 4 個點有 3 個在同一條線上，請選別的交叉點。", "err"); }
+  G = g; draw();
+};
+function seg(a, b) {  // sample along the line, skipping parts behind the camera
+  ctx.beginPath();
+  let pen = false;
+  for (let k = 0; k <= 40; k++) {
+    const t = k / 40, c = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    if (!front(G, c)) { pen = false; continue; }
+    const q = toC(proj(G, c));
+    pen ? ctx.lineTo(...q) : ctx.moveTo(...q); pen = true;
+  }
+  ctx.stroke();
+}
+function loupe(p) {  // 4x magnifier in the top-left corner while dragging
+  const r = 40, z = 4, sz = 2 * r * z;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(8, 8, sz, sz); ctx.clip();
+  ctx.fillStyle = "#000"; ctx.fillRect(8, 8, sz, sz);
+  ctx.drawImage(img, p[0] - r, p[1] - r, 2 * r, 2 * r, 8, 8, sz, sz);
+  ctx.strokeStyle = "#ffe14a"; ctx.lineWidth = 1;
+  for (const [a, b] of LINES) {
+    ctx.beginPath();
+    for (let k = 0; k <= 40; k++) {
+      const t = k / 40, q = proj(G, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      const x = 8 + (q[0] - p[0] + r) * z, y = 8 + (q[1] - p[1] + r) * z;
+      k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#ff4a6e"; ctx.beginPath(); ctx.moveTo(8 + sz / 2, 8); ctx.lineTo(8 + sz / 2, 8 + sz);
+  ctx.moveTo(8, 8 + sz / 2); ctx.lineTo(8 + sz, 8 + sz / 2); ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = "#fff"; ctx.strokeRect(8, 8, sz, sz);
+}
+function pt(e) {
+  const r = cv.getBoundingClientRect();
+  return [Math.min(Math.max((e.clientX - r.left - PX) / S, 0), M.w), Math.min(Math.max((e.clientY - r.top - PY) / S, 0), M.h)];
+}
+cv.onpointerdown = e => {
+  if (!G) return;
+  const p = pt(e);
+  let best = -1, bd = 22 / S;
+  handles.forEach((h, i) => { const d = Math.hypot(h.p[0] - p[0], h.p[1] - p[1]); if (d < bd) { bd = d; best = i; } });
+  if (best < 0 && sel >= 0) {  // a handle is selected and a small dot was clicked: use that point instead
+    let c = null, cd = 14 / S;
+    for (const q of visible()) { const r = proj(G, q), d = Math.hypot(r[0] - p[0], r[1] - p[1]); if (d < cd) { cd = d; c = q; } }
+    if (c && !handles.some(h => h.c === c)) { handles[sel] = {c, p: proj(G, c)}; draw(); return; }
+  }
+  sel = drag = best;
+  if (best >= 0) cv.setPointerCapture(e.pointerId);
+  draw();
+};
+cv.onpointermove = e => { if (drag >= 0) { handles[drag].p = pt(e); resolve(); draw(); } };
+cv.onpointerup = () => { drag = -1; draw(); };
+document.onkeydown = e => {
+  if (sel < 0 || !G || !e.key.startsWith("Arrow") || document.activeElement.tagName === "INPUT") return;
+  const d = e.shiftKey ? 10 : 1;
+  const [dx, dy] = {ArrowLeft:[-d, 0], ArrowRight:[d, 0], ArrowUp:[0, -d], ArrowDown:[0, d]}[e.key];
+  handles[sel].p = [handles[sel].p[0] + dx, handles[sel].p[1] + dy];
+  resolve(); e.preventDefault(); draw();
+};
+function msg(t, cls = "") { $("#calMsg").className = "row hint " + cls; $("#calMsg").textContent = t; }
+const defaultCorners = () => [[M.w * .2, M.h * .92], [M.w * .8, M.h * .92], [M.w * .64, M.h * .45], [M.w * .36, M.h * .45]];
+async function autoDetect() {
+  msg("自動偵測中…（第一次要先合成背景，約 5–10 秒）");
+  try {
+    const j = await api("/api/calib/auto", {id:M.id, t:+$("#t").value});
+    setCorners(j.corners);
+    msg(`偵測到球場（白線吻合 ${(j.on_line * 100).toFixed(0)}%）。黃線沒對齊的話，拖 1–4 號點到它應該在的白線交叉點。`, j.on_line > 0.6 ? "ok" : "");
+  } catch (e) {
+    setCorners(defaultCorners());
+    msg(e.message + "：請把 1–4 號點拖到對應的白線交叉點", "err");
+  }
+}
+$("#auto").onclick = autoDetect;
+$("#reset").onclick = () => { setCorners(defaultCorners()); msg("已重設。把 1–4 號點拖到對應的白線交叉點。"); };
+$("#snap").onclick = async () => {
+  if (!G) return;
+  msg("貼齊白線中…");
+  try { const j = await api("/api/calib/snap", {id:M.id, t:+$("#t").value, corners:corners()}); setCorners(j.corners); msg(`已貼齊（白線吻合 ${(j.on_line * 100).toFixed(0)}%）。`, "ok"); }
+  catch (e) { msg(e.message, "err"); }
+};
+$("#save").onclick = async () => {
+  try { await api("/api/calib/save", {id:M.id, corners:corners()}); msg("已儲存校正。", "ok"); }
+  catch (e) { msg(e.message, "err"); }
+};
+
+// ---- names
+function names(n) {
+  $("#names").innerHTML = "";
+  for (const k of ["P1", "P2", "P3", "P4"]) {
+    const l = document.createElement("label");
+    l.innerHTML = `<span class="dot" style="background:${COLORS[k]}"></span><input type="text" value="${n[k]}" maxlength="12">`;
+    l.querySelector("input").onchange = e => api("/api/names", {id:M.id, names:{[k]:e.target.value}});
+    $("#names").appendChild(l);
+  }
+}
+
+// ---- run & results
+async function run(start) {
+  try {
+    if (start === "players") await api("/api/calib/save", {id:M.id, corners:corners()});
+    await api("/api/run", {id:M.id, start});
+  } catch (e) { return $("#runMsg").textContent = e.message; }
+  $("#run").disabled = $("#rerender").disabled = true;
+  clearInterval(poll);
+  poll = setInterval(async () => {
+    const j = await api("/api/status");
+    $("#runProg").value = j.progress; $("#runMsg").textContent = j.error ? "錯誤：" + j.error : j.msg;
+    if (!j.running) {
+      clearInterval(poll); $("#run").disabled = $("#rerender").disabled = false;
+      if (!j.error) showResult(true);
+    }
+  }, 1000);
+}
+$("#run").onclick = () => run("players");
+$("#rerender").onclick = () => run("rallies");
+async function showResult(done) {
+  $("#s5").classList.toggle("off", !done);
+  if (!done) return;
+  const src = `/api/hud?id=${M.id}&v=${Date.now()}`;
+  $("#vid").src = src; $("#dl").href = src;
+  const R = await api("/api/rallies?id=" + M.id);
+  const tb = $("#rallies"); tb.innerHTML = "";
+  for (const r of R) {
+    const tr = document.createElement("tr");
+    const auto = r.point_source === "fixed" ? "" : r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知";
+    tr.innerHTML = `<td>${r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
+      <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">不算</option></select></td>
+      <td>${r.score_us ?? ""} : ${r.score_opp ?? ""}</td><td>${r.winning_label || ""}</td>`;
+    const s = tr.querySelector("select");
+    s.value = r.point_source === "fixed" ? (r.point_team_final || "none") : "auto";
+    s.onchange = () => api("/api/winner", {id:M.id, rally_id:r.rally_id, team:s.value});
+    tr.querySelector(".seek").onclick = e => { e.preventDefault(); $("#vid").currentTime = r.start_ts; $("#vid").play(); };
+    tb.appendChild(tr);
+  }
+}
+const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
+loadList();
+</script>
+</body>
+</html>

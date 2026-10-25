@@ -1,0 +1,48 @@
+# Tunable knobs. Edit, then press 「套用修正並重新輸出」 in the editor (or `hud run --from rallies`).
+
+[colors]  # RGB hex per player
+P1 = "#36c8f0"
+P2 = "#5be0a0"
+P3 = "#b48cff"
+P4 = "#ffb050"
+
+[rally]
+dead_time_s = 2.5        # after the shuttle lands, ignore "hits" this long (pick-up, toss back)
+max_gap_s = 3.0          # two hits further apart than this belong to different rallies
+silence_s = 1.0          # no real shuttle sighting this long = play has stopped
+flight_gap_s = 0.25      # rally ends where the last shot's track breaks off for this long
+max_flight_s = 1.5       # ... and no later than this after the last hit (a high clear's flight)
+min_shots = 2            # rallies with fewer hits are dropped as noise
+serve_answer_s = 1.25    # a rally's first hit must be answered this fast, else it was pre-serve fiddling
+                         # (tuned on 3 rallies of one clip; raise it if long high serves get dropped)
+
+[score]
+# score at the start of the video (for videos that begin mid-match)
+games_us = 0
+games_opp = 0
+us = 0
+opp = 0
+first_server = ""        # "us" / "opp" if known; afterwards the rally winner serves
+target = 21
+cap = 30
+games_to_win = 2
+
+[stamina]
+# HUD 體力: a game-style meter, NOT a physiological measurement.
+# During a rally: -per_meter for every metre run, -per_sprint_s per second above sprint_speed_mps.
+# Between rallies: +recover_per_s per second. Floored at 0, capped at start.
+start = 100
+per_meter = 1.5
+per_sprint_s = 4.0
+sprint_speed_mps = 3.0
+recover_per_s = 3.0
+
+[move]
+window_s = 3.0           # MOVE bar = metres covered in the last window_s ...
+full_scale_m = 8.0       # ... divided by this (full bar)
+
+[placement]
+# rating 0-100 per shot from its landing spot; labels from these floors
+perfect = 85
+great = 70
+good = 50

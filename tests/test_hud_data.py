@@ -1,0 +1,108 @@
+"""Calibration from any 4+ named points, line snapping, placement ratings.
+Run: uv run python tests/test_hud_data.py"""
+import cv2
+import numpy as np
+
+from hud.court import LINES, auto_detect, homography, snap, to_court
+import pandas as pd
+
+from hud import config
+from hud import score
+from hud.rallies import build, rate
+
+
+def synth(f=1500.0, C=(7.0, -4.0, 1.5)):
+    """A low 45-degree phone view: camera off the near-right corner."""
+    C = np.array(C)
+    z = np.array([3.05, 6.7, 0.0]) - C
+    z /= np.linalg.norm(z)
+    x = np.cross(z, [0, 0, 1.0])
+    x /= np.linalg.norm(x)
+    R = np.array([x, np.cross(z, x), z])
+    return lambda X: np.array([960, 540]) + f * (R @ (np.r_[X, 0.0] - C))[:2] / (R @ (np.r_[X, 0.0] - C))[2]
+
+
+def test_auto_detect_with_corners_off_screen():
+    """Low 45-degree view where the near corners fall outside the frame: the court must still
+    be found from the painted lines alone, and snap() must polish a rough guess."""
+    proj = synth()
+    img = np.full((1080, 1920, 3), (180, 90, 40), np.uint8)  # blue-ish floor
+    for a, b in LINES:
+        cv2.line(img, tuple(proj(a).astype(int)), tuple(proj(b).astype(int)), (255, 255, 255), 5)
+    corners = np.array([proj(c) for c in [(0, 0), (6.1, 0), (6.1, 13.4), (0, 13.4)]])
+    off = ((corners < 0) | (corners > [1920, 1080])).any(1)
+    assert off.sum() >= 1, corners  # the scenario under test
+    probe = np.array([proj((x, y)) for x in (0.5, 3, 5.5) for y in (1, 4, 6, 9, 12)])
+    truth = np.array([(x, y) for x in (0.5, 3, 5.5) for y in (1, 4, 6, 9, 12)])
+    found, frac = auto_detect(img)
+    assert found is not None and frac > 0.8, frac
+    assert np.abs(to_court(homography(found), probe) - truth).max() < 0.15
+    rough = corners + np.random.default_rng(0).normal(0, 15, corners.shape)
+    snapped, _ = snap(img, rough)
+    before = np.abs(to_court(homography(rough), probe) - truth).max()
+    after = np.abs(to_court(homography(snapped), probe) - truth).max()
+    assert after < before and after < 0.15, (before, after)
+
+
+def test_placement():
+    assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
+    assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court
+    assert rate("drop", (5.9, 7.2), "us", [(3, 11)]) >= 85         # tight, by the side line
+    assert rate("smash", (0.2, 10), "us", [(4, 10), (4, 12)]) >= 85
+    assert rate("smash", (3.0, 10), "opp", [(1, 3)]) == 0           # landed on own side
+    assert rate("net", (3.0, 6.5), "opp", []) >= 70
+    assert rate("clear", (6.5, 12), "us", []) == 0                   # out
+
+
+def test_rallies():
+    """Two rallies split by 2 s of shuttle silence; a lone hit later is dropped; a same-team
+    double hit collapses to the sharper turn; an unresolved ending is capped by max flight."""
+    fps, n = 60, 1200
+    real = np.zeros(n, bool)
+    real[0:300] = True                 # rally 1 in view
+    real[420:1200] = True              # rally 2 stays "in view" forever (tracker noise)
+    shuttle = pd.DataFrame({"frame": range(n), "visible": real, "inpainted": False, "interpolated": False})
+    rows = [(30, "us", 120), (90, "opp", 130), (150, "opp", 60), (210, "us", 140),   # rally 1, opp hit twice
+            (450, "us", 120), (520, "opp", 120),                                     # rally 2
+            (1100, "us", 120)]                                                       # lone hit, > max_gap later
+    shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=a, player_id="P1" if t == "us" else "P3",
+                               shot_type="drive", landing_x=3.0, landing_y=3.0, landing_kind="intercept",
+                               end_frame=f + 60) for f, t, a in rows])
+    players = pd.DataFrame(columns=["frame", "player_id", "team", "x_m", "y_m", "observed"]).astype({"observed": bool})
+    out, rallies = build(shots, players, config.load(), shuttle)
+    assert out.frame.tolist() == [30, 90, 210, 450, 520], out.frame.tolist()
+    assert rallies.shot_count.tolist() == [3, 2]
+    assert rallies.end_frame.iat[1] <= 520 + 1.5 * fps  # capped: no shot flies longer than 1.5 s
+
+
+def test_serve_must_be_answered():
+    """Server fiddles with the shuttle (a 'hit' at 0 s), serves for real at 2 s, rally goes on."""
+    fps = 60
+    rows = [(0, "us"), (120, "us"), (160, "opp"), (200, "us")]
+    shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
+                               shot_type="drive", landing_x=3.0, landing_y=3.0, landing_kind="intercept",
+                               end_frame=f + 40) for f, t in rows])
+    players = pd.DataFrame(columns=["frame", "player_id", "team", "x_m", "y_m", "observed"]).astype({"observed": bool})
+    out, rallies = build(shots, players, config.load())
+    assert out.frame.tolist() == [120, 160, 200] and rallies.start_frame.tolist() == [120]
+
+
+def test_score():
+    cfg = config.load()
+    # 20-20 deuce, then us wins 22-20; next game starts 0-0. Rally 3 unknown, rally 2 fixed by hand.
+    cfg["score"].update(us=20, opp=20)
+    rallies = pd.DataFrame({"rally_id": [1, 2, 3, 4, 5], "point_team": ["us", None, None, "opp", "opp"]})
+    fixes = pd.DataFrame({"rally_id": [2], "point_team": ["us"]})
+    out = score.apply(rallies, cfg, fixes)
+    assert out.point_source.tolist() == ["landing", "fixed", "unknown", "landing", "landing"]
+    assert (out.score_us.tolist(), out.score_opp.tolist()) == ([21, 22, 0, 0, 0], [20, 20, 0, 1, 2])
+    assert out.game_won.tolist()[1] == "us" and out.games_us.tolist() == [0, 1, 1, 1, 1]
+    assert out.server.tolist() == ["us", "us", "us", "opp", "opp"]
+    assert score.game_over(29, 29, cfg["score"]) is False and score.game_over(30, 29, cfg["score"])
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+            print("ok", name)
