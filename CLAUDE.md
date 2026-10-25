@@ -17,7 +17,9 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 ## Status / known issues (2026-10-26)
 - Auto court detection: correct on the 45° test clip, a 3K MCC hall recording and a broadcast
   rear view. Fails on screen recordings of zoomed/moving playback; the editor's 4 control
-  points + top-down mini map are the manual fallback.
+  points + top-down mini map are the manual fallback. The 4 points default to the court corners and
+  may be dragged into the grey margin around the frame (view grows up to 60% past each edge).
+- Per-stage seconds go to out/<match>/timing.json. TrackNet (every frame, ~28 GFLOPs/frame) dominates.
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.
