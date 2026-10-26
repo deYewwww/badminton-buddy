@@ -61,7 +61,12 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   only beyond landing_sure_sd). Same side twice within DOUBLE_S: flip one to the other side if
   it was in reach, else drop the weaker turn (ACE same-side 26% -> 14%; noisy broadcast copy
   wrong sides 2 -> 1). Tried and dropped: telling the hitter side by which contact gives the
-  better physical flight fit (both fit equally, 67% on the broadcast rally).
+  better physical flight fit (both fit equally, 67% on the broadcast rally); by wrist speed from
+  30 fps pose on per-player crops around each hit (67% on the broadcast rally, ACE same-side
+  20 -> 38: a swing spans 1-2 frames, blurred wrists drop out, a 60 px far player's keypoint
+  jitter is as big as the swing). Next idea: the racket's sound (near hits ~10 dB louder from
+  3 m vs 12 m, sharp onsets). ACE can't test it: its audio track is music (72% of energy < 200 Hz).
+  Needs a raw clip with the hall's own sound.
 - Stamina: render.stamina_track (metres, sprints, per-stroke cost incl. "defence", fatigue ceiling).
 - Roboflow/HF/Google Drive downloads are blocked by this environment's network policy (the
   Roboflow MCP can search/fork/train but export links are on app.roboflow.com). GitHub release
