@@ -22,7 +22,10 @@ from hud import config, court
 from hud.court import COURT_L, COURT_W, NET_Y
 
 FONTS = ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc",
-         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"]
+         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+         # Linux (cloud tests): without a CJK font every Chinese label renders as boxes
+         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"]
 FONT = next((f for f in FONTS if Path(f).exists()), None)
 PIDS = ["P1", "P2", "P3", "P4"]
 TEAM = {"P1": "us", "P2": "us", "P3": "opp", "P4": "opp"}
