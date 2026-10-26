@@ -1,6 +1,8 @@
 """Match score from rallies: rally-point scoring to 21, win by 2, capped at 30, best of three.
 
 Who won each rally, first that applies:
+  0. manual_points CSV (t,point_team): a point the user added at a time, for a rally the
+     analysis missed (rallies.add_manual)
   1. point_fixes CSV (rally_id,point_team with us/opp, or 'none' for a let): the human word
   2. rallies.point_team: the shuttle was seen landing and in/out was judged (an estimate:
      line calls carry the calibration error), or its fitted flight fell short of the net
@@ -35,8 +37,11 @@ def apply(rallies, cfg, fixes=None):
     us, opp, g_us, g_opp = s["us"], s["opp"], s["games_us"], s["games_opp"]
     server = s.get("first_server") or None
     rows = []
-    for r in rallies.sort_values("rally_id").itertuples():
-        if r.rally_id in over:
+    order = "start_ts" if "start_ts" in rallies else "rally_id"  # manual points sit between rallies in time
+    for r in rallies.sort_values(order).itertuples():
+        if getattr(r, "manual", False) is True:
+            team, src = r.point_team, "manual"
+        elif r.rally_id in over:
             team, src = (None if over[r.rally_id] == "none" else over[r.rally_id]), "fixed"
         elif isinstance(r.point_team, str) and r.point_team in TEAMS:
             team, src = r.point_team, "landing"
@@ -59,7 +64,7 @@ def apply(rallies, cfg, fixes=None):
                          game_no=g_us + g_opp + 1, server=server, game_won=won))
         if won:  # next game from 0-0; the winner serves first
             g_us, g_opp, us, opp = g_us + (won == "us"), g_opp + (won == "opp"), 0, 0
-    out = rallies.sort_values("rally_id").reset_index(drop=True)
+    out = rallies.sort_values(order).reset_index(drop=True)
     return pd.concat([out, pd.DataFrame(rows)], axis=1)
 
 

@@ -78,6 +78,11 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   landing too close to a line still sets point_lean (the guess); one well short of the net in
   the hitter's own half is a net error (NET_SURE_SD). The user's ACE complaints (net shot given
   to the hitter) were all guesses: the montage cuts most rally endings.
+- Manual points (editor "補一分", manual_points.csv: t, point_team): rallies.add_manual inserts
+  one-frame pseudo rallies (rally_id 1000+, manual=True, point_source "manual"); score.apply
+  orders by start_ts so detected rally ids, and the user's point_fixes keyed on them, stay put.
+  The user's run of ACE missed 2 of our points (~85 s, ~97 s) that a run with the reference
+  calibration finds; their calib keeps failing camera_plausible (far corners ~50 px high).
 - Roboflow/HF/Google Drive downloads are blocked by this environment's network policy (the
   Roboflow MCP can search/fork/train but export links are on app.roboflow.com). GitHub release
   assets (e.g. ultralytics yolo11n.pt) and PyPI do download.

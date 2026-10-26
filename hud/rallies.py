@@ -236,12 +236,38 @@ def _fps(shots):
     return (d.frame.iat[-1] - d.frame.iat[0]) / (d.timestamp.iat[-1] - d.timestamp.iat[0])
 
 
+MANUAL_ID = 1000  # manual points get rally ids from here: the detected rallies keep theirs (and their fixes)
+
+
+def add_manual(rallies, manual, fps):
+    """Points the user added at a time (the analysis missed that rally): one-frame pseudo
+    rallies, rally_id MANUAL_ID + k, point_source "manual" in score.apply."""
+    if manual is None or not len(manual):
+        return rallies
+    rows = []
+    for k, m in enumerate(manual.sort_values("t").itertuples()):
+        f = int(round(float(m.t) * fps))
+        rows.append(dict(rally_id=MANUAL_ID + k, start_frame=f, end_frame=f, start_ts=float(m.t), end_ts=float(m.t),
+                         duration_s=0.0, shot_count=0, ended_on_floor=False, landing_x=np.nan, landing_y=np.nan,
+                         landing_in=None, point_team=m.point_team, winning_label="", manual=True))
+    out = pd.concat([rallies, pd.DataFrame(rows)], ignore_index=True) if len(rallies) else pd.DataFrame(rows)
+    out["manual"] = out.get("manual", False)
+    out["manual"] = out.manual.astype("boolean").fillna(False).astype(bool)
+    return out.sort_values("start_ts").reset_index(drop=True)
+
+
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
-        point_fixes=None, cuts=()):
+        point_fixes=None, cuts=(), manual_points=None):
     from hud import score
     cfg = config.load(cfg_path)
     shuttle = pd.read_parquet(shuttle_path) if shuttle_path else None
     shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle, cuts)
+    manual = pd.read_csv(manual_points) if manual_points and Path(manual_points).exists() else None
+    if manual is not None and len(manual):
+        fps = _fps(shots) if len(shots) else 30.0
+        if shuttle is not None and len(shuttle) > 1:
+            fps = 1 / np.median(np.diff(shuttle.timestamp))
+        rallies = add_manual(rallies, manual, fps)
     if len(rallies):
         fixes = pd.read_csv(point_fixes) if point_fixes and Path(point_fixes).exists() else None
         rallies = score.apply(rallies, cfg, fixes)

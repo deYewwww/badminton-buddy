@@ -102,6 +102,9 @@
     <video id="vid" controls playsinline></video>
     <div class="row"><a id="dl" download="hud.mp4"><button>下載 HUD 影片</button></a>
       <button id="rerender">套用修正並重新輸出</button></div>
+    <div class="row hint">漏掉一分（沒有偵測到那個回合）？把影片停在那一分結束的地方，按：
+      <button id="addUs">補一分：我隊</button> <button id="addOpp">補一分：對手</button>
+      <span id="addMsg"></span></div>
     <table><thead><tr><th>#</th><th>開始</th><th>時長</th><th>拍數</th><th>得分方</th><th>比分</th><th>落點</th></tr></thead>
       <tbody id="rallies"></tbody></table>
   </section>
@@ -561,6 +564,11 @@ async function run(start) {
 }
 $("#run").onclick = () => run("players");
 $("#rerender").onclick = () => run("rallies");
+for (const [b, team] of [["#addUs", "us"], ["#addOpp", "opp"]]) $(b).onclick = async () => {
+  const t = $("#vid").currentTime;
+  await api("/api/point", {id:M.id, t, team});
+  $("#addMsg").textContent = `已在 ${fmt(t)} 補一分給${team === "us" ? "我隊" : "對手"}，按「套用修正並重新輸出」生效。`;
+};
 async function showResult(done) {
   $("#s5").classList.toggle("off", !done);
   if (!done) return;
@@ -572,12 +580,18 @@ async function showResult(done) {
     const tr = document.createElement("tr");
     const auto = r.point_source === "fixed" ? "" : (r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知")
       + (r.point_source === "guess" ? "，推測" : r.point_source === "landing" ? "，看落點" : "");
-    tr.innerHTML = `<td>${r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
+    tr.innerHTML = `<td>${r.manual ? "＋" : r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
       <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">不算</option></select></td>
       <td>${r.score_us ?? ""} : ${r.score_opp ?? ""}</td><td>${r.winning_label || ""}</td>`;
     const s = tr.querySelector("select");
-    s.value = r.point_source === "fixed" ? (r.point_team_final || "none") : "auto";
-    s.onchange = () => api("/api/winner", {id:M.id, rally_id:r.rally_id, team:s.value});
+    if (r.manual) {  // a point added by hand: only removable
+      s.outerHTML = `<span>${r.point_team_final === "us" ? "我隊" : "對手"}（手動補的）</span> <button class="del">刪除</button>`;
+      tr.querySelector(".del").onclick = async () => { await api("/api/point", {id:M.id, t:r.start_ts, team:"remove"});
+        tr.style.opacity = 0.4; $("#addMsg").textContent = "已刪除，按「套用修正並重新輸出」生效。"; };
+    } else {
+      s.value = r.point_source === "fixed" ? (r.point_team_final || "none") : "auto";
+      s.onchange = () => api("/api/winner", {id:M.id, rally_id:r.rally_id, team:s.value});
+    }
     tr.querySelector(".seek").onclick = e => { e.preventDefault(); $("#vid").currentTime = r.start_ts; $("#vid").play(); };
     tb.appendChild(tr);
   }

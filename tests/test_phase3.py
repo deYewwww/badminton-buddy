@@ -95,6 +95,19 @@ def test_net_error_and_leaning_guess():
     assert lean_out.point_team_final == "opp" and lean_out.point_source == "guess"
 
 
+def test_manual_point_fills_a_missed_rally():
+    from hud import config, score
+    from hud.rallies import add_manual
+    rallies = pd.DataFrame(dict(rally_id=[1, 2], start_frame=[30, 300], end_frame=[120, 400], start_ts=[1.0, 10.0],
+                                end_ts=[4.0, 13.3], point_team=["us", "opp"]))
+    manual = pd.DataFrame(dict(t=[7.5], point_team=["us"]))
+    r = add_manual(rallies, manual, 30)
+    out = score.apply(r, config.load(), pd.DataFrame(dict(rally_id=[2], point_team=["us"])))
+    assert out.rally_id.tolist() == [1, 1000, 2]                 # time order; detected ids (and fixes) kept
+    assert out.point_source.tolist() == ["landing", "manual", "fixed"]
+    assert out.score_us.tolist() == [1, 2, 3] and out.end_frame.tolist()[1] == 225
+
+
 def test_landing_predicted_from_lost_flight():
     from hud.landing import predict
     cam, H, proj = low_camera()
