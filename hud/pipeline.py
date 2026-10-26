@@ -69,7 +69,9 @@ def prepare(video, out_dir, progress=print):
     if not moved:
         return work(out_dir, video)
     progress("鏡頭有移動，先穩定畫面…")
-    corners = stabilize.run(video, p["stab"], t, calib["corners"])
+    step = {"measure": "分析鏡頭移動", "write": "輸出穩定後的影片"}
+    corners = stabilize.run(video, p["stab"], t, calib["corners"],
+                            progress=lambda x, what: progress(f"穩定畫面（{step[what]}）… {x:.0%}"))
     cw, ch = json.loads(p["stab"].with_suffix(".json").read_text())["canvas"]
     court.save(p["stab_calib"], p["stab"], (cw, ch), corners, t=t, **key)
     _stab_marks(p)
