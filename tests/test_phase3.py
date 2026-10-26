@@ -45,22 +45,26 @@ def test_smoothing_weighs_far_jitter():
     assert {"x_raw", "y_raw"} <= set(sm)
 
 
-def test_stamina_drains_by_stroke_and_recovers_partly():
+def test_stamina_follows_effort():
     from hud import config
     from hud.render import stamina_track, stroke_kinds
     st = config.load()["stamina"]
     F, fps = 300, 30
-    step, speed = np.zeros((F, 4)), np.zeros((F, 4))
+    step = np.zeros((F, 4))
+    speed = np.zeros((F, 4))
+    speed[:150, 0] = 4.0                         # P1 sprints through the rally, P2 stands, P3/P4 hit
     rally_of = np.r_[np.zeros(150, int), np.full(150, -1)]
-    shots = pd.DataFrame(dict(frame=[10, 40, 70], player_id=["P1", "P3", "P2"], team=["us", "opp", "us"],
-                              shot_type=["smash", "clear", "net"], rally_id=[1, 1, 1]))
-    assert [k for _, _, k in stroke_kinds(shots)] == ["smash", "defence", "net"]  # P3 answered a smash
+    shots = pd.DataFrame(dict(frame=[10, 40, 70, 100], player_id=["P3", "P4", "P3", "P3"],
+                              team=["opp", "us", "opp", "opp"], shot_type=["smash", "clear", "smash", "smash"],
+                              contact_z_m=[2.0, 1.0, 2.0, 2.0], rally_id=[1, 1, 1, 1]))
+    assert [k for _, _, k in stroke_kinds(shots)] == ["smash", "defence", "smash", "smash"]
     out, costs = stamina_track(step, speed, rally_of, shots, fps, st)
-    c = st["shot_cost"]
-    assert np.isclose(out[149, 0], 100 - c["smash"]) and np.isclose(out[149, 2], 100 - c["defence"])
-    assert out[149, 3] == 100 and len(costs) == 3
-    # rest: recovers, but not all the way (fatigue ceiling)
-    assert out[149, 0] < out[-1, 0] < 100
+    assert out[149, 1] == 100                     # standing still costs nothing
+    assert out[149, 0] < 98                       # 5 s of sprinting does
+    c = [cost for _, k, cost, _ in costs if k == 2]
+    assert c[0] == st["shot_cost"]["smash"] and c[1] > c[0] and c[2] > c[1]  # an attack streak costs more each time
+    assert [cost for _, k, cost, _ in costs if k == 3][0] == st["shot_cost"]["defence"]
+    assert out[149, 0] < out[-1, 0] < 100         # rest recovers, but not all the way (fatigue)
 
 
 def test_point_from_landing_side():
@@ -68,6 +72,27 @@ def test_point_from_landing_side():
     assert in_target(3.0, 10.0, "us") and not in_target(3.0, 5.0, "us")  # near team into the net: their loss
     assert in_target(3.0, 5.0, "opp") and not in_target(3.0, 14.0, "us")
     assert decisive(3.0, 10.0, "us", 0.3, 1.0) and not decisive(3.0, NET_Y + 0.2, "us", 0.3, 1.0)
+
+
+def test_net_error_and_leaning_guess():
+    from hud import config, score
+    from hud.rallies import build
+    fps = 30
+    def rally(landing_y, sd):
+        shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
+                                   shot_type="drive", landing_x=3.0, landing_y=y, landing_kind=k, landing_sd=s_,
+                                   end_frame=f + 20) for f, t, y, k, s_ in
+                              [(30, "us", 9.0, "intercept", np.nan), (50, "opp", 3.0, "intercept", np.nan),
+                               (70, "us", landing_y, "predicted", sd)]])
+        players = pd.DataFrame(columns=["frame", "player_id", "team", "x_m", "y_m", "observed"]).astype({"observed": bool})
+        _, r = build(shots, players, config.load())
+        return score.apply(r, config.load()).iloc[0]
+    net = rally(5.6, 1.0)        # near team's last shot comes down 1.1 m short of the net: their error
+    assert net.point_team_final == "opp" and net.point_source == "landing"
+    lean = rally(7.2, 1.0)       # just over the net, too close to call: a guess, but the right way
+    assert lean.point_team_final == "us" and lean.point_source == "guess"
+    lean_out = rally(14.0, 1.0)  # past the far baseline, not by enough to be sure: leans to the receivers
+    assert lean_out.point_team_final == "opp" and lean_out.point_source == "guess"
 
 
 def test_landing_predicted_from_lost_flight():

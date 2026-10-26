@@ -46,19 +46,30 @@ cap = 30
 games_to_win = 2
 
 [stamina]
-# HUD 體力: a game-style meter, NOT a physiological measurement. It drains with what a player
-# does and only partly comes back between rallies, so it trends down over a match.
-# During a rally: -per_meter per metre run. Any time: -per_sprint_s per second faster than
-# sprint_speed_mps. Every stroke costs shot_cost[type] ("defence" = returning a smash).
-# Between rallies: +recover_per_s per second, up to a ceiling that drops by fatigue x what was
-# spent. Calibrated so a long 21-point doubles game (~40 rallies) ends around 30-50.
+# HUD 體力: a game-style meter, NOT a physiological measurement. It drains with effort:
+#   running faster than walk_mps: -per_mps per second for every m/s above it
+#   footwork (stops, push-offs, direction changes): -per_accel per second per m/s^2 above accel_free
+#   every stroke: -shot_cost[type]; a jump smash (contact >= jump_z_m) +jump_extra; an attacking
+#   stroke (attack) by a player who attacked within streak_s costs streak_step more per stroke
+#   in the streak (up to +streak_max): a sustained attack drains fast, a block or lift little
+# Standing still (slower than rest_mps) recovers: recover_rally_per_s during a rally (the server,
+# a waiting partner), recover_per_s between rallies, up to a ceiling that falls by fatigue x spent.
 start = 100
-per_meter = 0.5
-per_sprint_s = 1.5
-sprint_speed_mps = 3.0
-recover_per_s = 0.6
-fatigue = 0.15
-shot_cost = { smash = 3.0, defence = 2.5, clear = 2.0, drive = 1.5, drop = 1.2, net = 1.0, other = 1.2 }
+walk_mps = 1.2
+per_mps = 0.45
+accel_free = 2.0
+per_accel = 0.08
+rest_mps = 1.0
+recover_rally_per_s = 0.3
+recover_per_s = 0.8
+fatigue = 0.12
+shot_cost = { smash = 1.8, drive = 0.7, clear = 0.8, drop = 0.5, net = 0.4, defence = 0.3, other = 0.5 }
+attack = ["smash", "drive"]
+jump_z_m = 2.6
+jump_extra = 0.5
+streak_s = 3.0
+streak_step = 0.3
+streak_max = 1.0
 
 [move]
 window_s = 3.0           # MOVE bar = metres covered in the last window_s ...

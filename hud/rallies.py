@@ -33,6 +33,7 @@ from hud.court import COURT_L, COURT_W, NET_Y
 
 clip = lambda v: float(np.clip(v, 0, 1))
 ENDS = ("floor", "predicted")  # landing kinds that end a rally
+NET_SURE_SD = 0.7  # a predicted landing this many sd short of the net, in the hitter's own half: net error
 
 
 def in_court(x, y):
@@ -157,7 +158,17 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
         sd = float(getattr(last, "landing_sd", np.nan)) if kind == "predicted" else 0.0
         ended = kind == "floor" or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
         inside = ended and in_target(last.landing_x, last.landing_y, last.team)
-        point = (last.team if inside else ("opp" if last.team == "us" else "us")) if ended else None
+        other = "opp" if last.team == "us" else "us"
+        point = (last.team if inside else other) if ended else None
+        lean = None  # not decided: which way the evidence leans (score.apply uses it as the guess)
+        if not ended and kind == "predicted" and np.isfinite(last.landing_x) and np.isfinite(sd):
+            # the fitted flight came down in the hitter's own half (into the net) or clearly out:
+            # the point goes the other way; in the opponents' half: the hitter's
+            m = target_margin(last.landing_x, last.landing_y, last.team)
+            lean = last.team if m > 0 else other
+            own_half = (last.landing_y >= NET_Y) != (last.team == "us")
+            if own_half and abs(last.landing_y - NET_Y) > NET_SURE_SD * sd:
+                ended, point = True, other  # short of the net, beyond doubt: a net error
         end_frame = int(last.end_frame) if last.end_frame >= 0 else int(last.frame)
         if real is not None and not ended:
             # unresolved ending: the rally ends where the last shot's flight track breaks off
@@ -174,7 +185,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
                          start_ts=g.timestamp.iat[0], shot_count=len(g),
                          last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=ended,
                          landing_x=last.landing_x if ended else np.nan, landing_y=last.landing_y if ended else np.nan,
-                         landing_in=inside if ended else None, point_team=point,
+                         landing_in=inside if ended else None, point_team=point, point_lean=lean,
                          winning_placement=last.placement if inside else None,
                          winning_label=last.placement_label if inside else ""))
     rallies = pd.DataFrame(rows)

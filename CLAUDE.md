@@ -61,8 +61,23 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   only beyond landing_sure_sd). Same side twice within DOUBLE_S: flip one to the other side if
   it was in reach, else drop the weaker turn (ACE same-side 26% -> 14%; noisy broadcast copy
   wrong sides 2 -> 1). Tried and dropped: telling the hitter side by which contact gives the
-  better physical flight fit (both fit equally, 67% on the broadcast rally).
-- Stamina: render.stamina_track (metres, sprints, per-stroke cost incl. "defence", fatigue ceiling).
+  better physical flight fit (both fit equally, 67% on the broadcast rally); by wrist speed from
+  30 fps pose on per-player crops around each hit (67% on the broadcast rally, ACE same-side
+  20 -> 38: a swing spans 1-2 frames, blurred wrists drop out, a 60 px far player's keypoint
+  jitter is as big as the swing). Next idea: the racket's sound (near hits ~10 dB louder from
+  3 m vs 12 m, sharp onsets). ACE can't test it: its audio track is music (72% of energy < 200 Hz).
+  Needs a raw clip with the hall's own sound.
+- Stamina: render.stamina_track: effort-based (speed above walking, footwork = acceleration,
+  per-stroke cost, attack streaks cost more, defence least), recovers when standing (slowly in a
+  rally); ACE ends at 69-89 (user: the old per-metre model fell far too fast).
+- HUD display smoothing (user: rings/tags shook): feet 0.3 s, boxes 0.4 s, stabilisation maps
+  averaged +-3 frames within a cut, tags stacked by depth + eased + held 1 s when the box drops,
+  MOVE/ARRIVED with hysteresis (move_states). Shuttle drawn only on runs of >= 5 real sightings
+  (shown_track): the user saw the trail "floating" on InpaintNet guesses and stray detections.
+- Score guesses (point_source "guess") are marked 推測 in the HUD and the editor table. A predicted
+  landing too close to a line still sets point_lean (the guess); one well short of the net in
+  the hitter's own half is a net error (NET_SURE_SD). The user's ACE complaints (net shot given
+  to the hitter) were all guesses: the montage cuts most rally endings.
 - Roboflow/HF/Google Drive downloads are blocked by this environment's network policy (the
   Roboflow MCP can search/fork/train but export links are on app.roboflow.com). GitHub release
   assets (e.g. ultralytics yolo11n.pt) and PyPI do download.
