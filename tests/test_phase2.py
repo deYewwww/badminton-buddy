@@ -115,7 +115,7 @@ def test_airspace_mask():
     box = court_airspace(cam)
     pts = [proj([3.0, 9.0, 6.0]), proj([1.0, 3.0, 1.0]), proj([-9.0, 6.0, 1.5]), proj([12.0, 3.0, 1.0]), (0, 0)]
     xy = np.array([p / [1920, 1080] if np.any(p) else p for p in pts], float)
-    assert outside_airspace(xy, (1920, 1080), box).tolist() == [False, False, True, True, False]
+    assert outside_airspace(xy, (0, 0, 1920, 1080), box).tolist() == [False, False, True, True, False]
 
 
 def test_tracknet_runs_without_autograd():
@@ -132,6 +132,19 @@ def test_coreml_vouching():
     assert same_centres(a, b)
     assert not same_centres(a, np.roll(b, 20, axis=-1))
     assert not same_centres(a, np.zeros_like(a))
+
+
+def test_tracknet_window():
+    """Landscape 16:9: whole frame. Portrait 720x1280: a 1280x720 window (training-size pixels),
+    padded 280 px at each side, ending just below the court floor."""
+    from hud.shuttle import window
+    assert window(1920, 1080) is None and window(1280, 720) is None
+    x0, y0, w, h = window(720, 1280)
+    assert (w, h) == (1280, 720) and x0 == -280 and y0 == 560
+    proj, f, C = synthetic_camera()
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    x0, y0, w, h = window(1440, 1080, cam)  # 4:3: crop height, bottom near the court's
+    assert (w, h) == (1440, 810) and 0 <= y0 <= 270
 
 
 def test_shot_rules():

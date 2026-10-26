@@ -63,12 +63,45 @@ def _load_models(device):
     return nets
 
 
-def _frames(video, every=None):
-    return frames(video, (W, H), every or 1, rgb=True)
+def window(fw, fh, cam=None, margin_m=1.5):
+    """(x0, y0, w, h) frame region fed to TrackNet, or None for the whole frame.
+    TrackNet was trained on 16:9 broadcast frames shrunk to 512x288. A portrait phone clip
+    squeezed into that loses 78 % of its height and the shuttle with it (13.8 % of frames
+    found on a 720x1280 doubles clip). So other shapes get a 16:9 window as tall as the
+    frame's short side allows (720x1280 -> 1280x720: the same shuttle size in pixels as the
+    training footage), padded at the sides, its bottom just below the court floor."""
+    if abs(fw / fh - 16 / 9) < 0.05:
+        return None
+    h = int(min(fh, round(max(fw, fh) * 9 / 16)))
+    w = int(round(h * 16 / 9))
+    bottom = fh
+    if cam is not None:
+        from hud.court import COURT_L, COURT_W
+        floor = [cam.project((x, y, 0.0)) for x in (-margin_m, COURT_W + margin_m) for y in (-margin_m, COURT_L + margin_m)
+                 if (cam.R @ (np.array([x, y, 0.0]) - cam.C))[2] > 0.1]
+        if floor:
+            bottom = min(fh, max(p[1] for p in floor) + 0.03 * fh)
+    y0 = int(np.clip(bottom - h, 0, fh - h))
+    x0 = int(round((fw - w) / 2)) if w > fw else 0
+    return x0, y0, w, h
 
 
-def _median(video, n):
-    frames = list(_frames(video, every=max(1, n // MEDIAN_SAMPLES)))
+def _crop(win, fw):
+    """ffmpeg filters cutting window win out of a frame fw wide (padding where it is wider)."""
+    if win is None:
+        return None
+    x0, y0, w, h = win
+    if w <= fw:
+        return f"crop={w}:{h}:{max(x0, 0)}:{y0}"
+    return f"crop={int(fw)}:{h}:0:{y0},pad={w}:{h}:{-x0}:0:black"
+
+
+def _frames(video, every=None, win=None, fw=None):
+    return frames(video, (W, H), every or 1, rgb=True, pre=_crop(win, fw))
+
+
+def _median(video, n, win=None, fw=None):
+    frames = list(_frames(video, every=max(1, n // MEDIAN_SAMPLES), win=win, fw=fw))
     if not frames:
         raise SystemExit(f"No frames could be read from {video}")
     return np.median(frames, axis=0).astype(np.uint8)
@@ -142,19 +175,20 @@ def same_centres(a, b, tol=2.0):
     return True
 
 
-def outside_airspace(xy, size, box):
-    """xy: (N,2) normalised TrackNet positions ((0, 0) = not seen); size: frame (w, h);
+def outside_airspace(xy, win, box):
+    """xy: (N,2) normalised TrackNet positions ((0, 0) = not seen); win: (x0, y0, w, h), the
+    frame region they are normalised to;
     box: image polygon of the air above the court (hits.court_airspace). -> bool (N,): seen
     but outside the box (side stands, ceiling lights, a neighbouring court's shuttle). Anything
     straight behind the court projects inside the box and is not caught here."""
     seen = (xy != 0).any(axis=1)
-    px = xy * np.asarray(size, float)
+    px = np.asarray(win[:2], float) + xy * np.asarray(win[2:], float)
     inside = np.array([cv2.pointPolygonTest(box, (float(x), float(y)), False) >= 0 for x, y in px])
     return seen & ~inside
 
 
 @torch.no_grad()
-def run_tracknet(video, batch=1, idle=None, box=None):
+def run_tracknet(video, batch=1, idle=None, box=None, win=None):
     """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip),
     except 8-frame windows that are wholly idle (bool per frame). Even those still run while
     the previous window saw the shuttle in its last frames: a rally the gate misjudged as
@@ -169,13 +203,14 @@ def run_tracknet(video, batch=1, idle=None, box=None):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     cap.release()
     stride = 1
+    full = (0, 0, fw, fh) if win is None else win  # what the normalised positions refer to
     from hud import coreml
     ml = coreml.tracknet()   # CoreML copy (Neural Engine), vouched for against PyTorch below
     to_check = 30            # compare on up to this many windows, until one has a shuttle in it
-    median = np.moveaxis(_median(video, n), -1, 0)
+    median = np.moveaxis(_median(video, n, win, fw), -1, 0)
     xy = []  # normalised (x, y) per frame, (0, 0) = not seen
     windows, done, read, skipped = [], False, 0, 0
-    src = _frames(video)
+    src = _frames(video, win=win, fw=fw)
     while not done:
         frames = []
         while len(frames) < L:
@@ -222,7 +257,7 @@ def run_tracknet(video, batch=1, idle=None, box=None):
         print(f"TrackNet skipped {skipped}/{len(xy)} idle frames ({skipped / max(len(xy), 1):.0%})")
     xy = np.array(xy, np.float32).reshape(-1, 2)
     if box is not None:  # before InpaintNet, so it neither bridges to nor from a stray sighting
-        out = outside_airspace(xy, (fw, fh), box)
+        out = outside_airspace(xy, full, box)
         xy[out] = 0
         if out.any():
             print(f"Dropped {int(out.sum())} sightings outside the air above the court")
@@ -236,10 +271,10 @@ def run_tracknet(video, batch=1, idle=None, box=None):
     out = inpaintnet(torch.from_numpy(xp).to(device), torch.from_numpy(mp).to(device)).cpu().numpy()
     fixed = (out * mp + xp * (1 - mp)).reshape(-1, 2)[:m]
     fixed[(fixed < COOR_TH).all(axis=1)] = 0
-    seen = (fixed != 0).any(axis=1)
+    X, Y = full[0] + fixed[:, 0] * full[2], full[1] + fixed[:, 1] * full[3]
+    seen = (fixed != 0).any(axis=1) & (X >= 0) & (X < fw) & (Y >= 0) & (Y < fh)  # not in the padding
     return pd.DataFrame({"Frame": np.arange(m) * stride, "Visibility": seen.astype(int),
-                         "X": fixed[:, 0] * fw, "Y": fixed[:, 1] * fh,
-                         "inpainted": seen & ~vis})
+                         "X": X, "Y": Y, "inpainted": seen & ~vis})
 
 
 def drop_glitches(p, spike, max_len):
@@ -311,17 +346,22 @@ def run(video, out, players_path=None, calib_path=None):
     idle = None
     if cfg.get("skip_idle") and players_path and Path(players_path).exists():
         idle = idle_frames(pd.read_parquet(players_path, columns=["frame", "player_id", "x_m", "y_m"]), times, cfg)
-    box = None
+    box, cam = None, None
+    width = cv2.VideoCapture(str(video)).get(cv2.CAP_PROP_FRAME_WIDTH)
     if calib_path and Path(calib_path).exists():
         from hud.camera import Camera
         from hud.court import load
         from hud.hits import court_airspace
         H, calib = load(calib_path)
         try:
-            box = court_airspace(Camera(H, calib["frame_size"]))
+            cam = Camera(H, calib["frame_size"])
+            box = court_airspace(cam)
         except ValueError:  # calibration without a valid focal length: keep everything
             pass
-    df = clean(run_tracknet(video, idle=idle, box=box), times, height, fps)
+    win = window(width, height, cam)
+    if win is not None:
+        print(f"TrackNet window {win} of a {int(width)}x{int(height)} frame")
+    df = clean(run_tracknet(video, idle=idle, box=box, win=win), times, height, fps)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     det = int((df.visible & ~df.interpolated & ~df.inpainted).sum())

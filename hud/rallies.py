@@ -66,6 +66,8 @@ def label(score, cfg):
 
 def build(shots, players, cfg, shuttle=None):
     r = cfg["rally"]
+    if shots.empty:  # no hits found (e.g. shuttle not tracked): no rallies, not a crash
+        return shots, pd.DataFrame()
     shots = shots.sort_values("frame").reset_index(drop=True)
     ts = shots.timestamp.to_numpy()
     fps = _fps(shots)
