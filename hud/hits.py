@@ -70,6 +70,10 @@ SAME_LOST_COST = 0.8  # ... where the shuttle went unseen for >= 3 frames betwee
 SUPPORT_S, SUPPORT_MIN = 0.17, 0.3  # around a hit, >= 30% of frames must be real detections
 MAX_KMH = 450
 MISSED_HIT_S = 2.0    # same side hits again within this: not a landing, a hit was missed
+DOUBLE_S = 0.6        # ... but within this, the same stroke seen twice (see detect)
+LAND_JUMP = 0.12      # x pixel scale: the last step into a landing spot is at most this long
+STILL_PX = 12         # at 1080p: a shuttle lying on the floor stays within this of its median (TrackNet's
+                      # centre wobbles 5-7 px at 720p; 3 px never let the ACE clip's floor landings settle)
 MAX_GAP_GONE_S = 0.3  # sighting gap longer than this after a rally's last hit = shuttle left play
 Z_RANGE = (0.2, 3.5)  # plausible contact heights, m
 PICKUP_Z_M = 0.25     # lower than this is a shuttle picked up off the floor, not a stroke
@@ -111,10 +115,12 @@ def court_airspace(cam, margin=AIR_MARGIN_M, top=AIR_TOP_M):
 
 def landed_at(p, start, stop, still_px=3, still_n=5):
     """First frame in [start, stop] from which the shuttle sits still (lying on the floor)
-    for still_n frames; stop if it never settles in view."""
+    for still_n frames (every sighting within still_px of their median; a missed frame or two
+    allowed); stop if it never settles in view."""
     for q in range(start, stop - still_n + 1):
         seg = p[q:q + still_n]
-        if np.isfinite(seg).all() and np.hypot(*(seg - seg[0]).T).max() <= still_px:
+        ok = np.isfinite(seg[:, 0])
+        if ok[0] and ok.sum() >= still_n - 2 and np.hypot(*(seg[ok] - np.median(seg[ok], 0)).T).max() <= still_px:
             return q
     return stop
 
@@ -333,6 +339,7 @@ def shot_type(contact, land, kmh, avg_kmh=None):
 
 def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=(), frame_h=None):
     """img_h: the pixel scale (camera short side, 1080 at 1080p); frame_h: the frame's own height."""
+    from hud import landing
     p = shuttle[["x_px", "y_px"]].to_numpy(float, copy=True)
     # multi-court halls: TrackNet happily follows other courts' shuttles; keep only what is
     # inside the image of the air box above our court
@@ -425,16 +432,51 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
             who = opts[team][1]
             contact = contact_of(i, who)
             contact[2] = np.clip(contact[2], *Z_RANGE)
-            hits.append(dict(frame=i, timestamp=t[i], player_id=who.player_id, team=who.team,
-                             shuttle_x_px=p[i, 0], shuttle_y_px=p[i, 1], turn_deg=round(ang[i], 1),
-                             contact_x_m=contact[0], contact_y_m=contact[1], contact_z_m=contact[2]))
+            hit = dict(frame=i, timestamp=t[i], player_id=who.player_id, team=who.team,
+                       shuttle_x_px=p[i, 0], shuttle_y_px=p[i, 1], turn_deg=round(ang[i], 1),
+                       contact_x_m=contact[0], contact_y_m=contact[1], contact_z_m=contact[2])
+            # the other side's player, if they could have hit it too (see the doubles check below)
+            other = next((o[1] for tm, o in opts.items() if tm != team), None)
+            alt = None
+            if other is not None:
+                ok, miss = geo_fit(cam, p[i], other)
+                if ok:
+                    c = contact_of(i, other)
+                    c[2] = np.clip(c[2], *Z_RANGE)
+                    alt = dict(hit, player_id=other.player_id, team=other.team, contact_x_m=c[0],
+                               contact_y_m=c[1], contact_z_m=c[2], miss=miss)
+            hits.append(dict(hit, alt=alt))
 
+    # one side twice within DOUBLE_S: the shuttle can't cross the court and come back that fast.
+    # If the other side could have hit one of them (in reach), it was a fast exchange with that
+    # hit given to the wrong side: flip it (dropping instead cost 2 real hits of a noisy broadcast
+    # rally). Otherwise a single stroke whose path the tracker saw turn twice (racket
+    # follow-through, a frame of the racket head): keep the sharper turn. On the ACE clip 25 of 28
+    # same-side pairs were this, 0.2-0.5 s apart, with the other side 3-7 m out of reach; and
+    # each one hid the real last shot's landing (a "same side again soon" means play went on).
+    hits = sorted(hits, key=lambda h: h["frame"])
+    k = 1
+    while k < len(hits):
+        a, b = hits[k - 1], hits[k]
+        if a["team"] == b["team"] and b["timestamp"] - a["timestamp"] < DOUBLE_S:
+            flip = [x for x in (k - 1, k) if hits[x]["alt"] is not None]
+            if flip:  # the other side could have hit one of them: a fast exchange with that side wrong
+                x = min(flip, key=lambda x: hits[x]["alt"]["miss"])
+                hits[x] = dict(hits[x]["alt"], alt=None)
+            else:
+                hits.pop(k if a["turn_deg"] >= b["turn_deg"] else k - 1)
+                continue
+        k += 1
+    for h in hits:
+        h.pop("alt", None)
+        h.pop("miss", None)
     rows = []
     for n, h in enumerate(hits):
         i = h["frame"]
         c0 = np.array([h["contact_x_m"], h["contact_y_m"], h["contact_z_m"]])
         # landing: next hitter's contact if the rally goes on, else last sighting on the floor
         nxt = hits[n + 1] if n + 1 < len(hits) else None
+        land_sd = np.nan
         if nxt and nxt["team"] != h["team"]:
             land, kind, end = (nxt["contact_x_m"], nxt["contact_y_m"]), "intercept", nxt["frame"]
             end3 = np.array([nxt["contact_x_m"], nxt["contact_y_m"], nxt["contact_z_m"]])
@@ -444,18 +486,33 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
             while q < stop and (seen[q] or (last_seen is not None and t[q] - t[last_seen] <= MAX_GAP_GONE_S)):
                 last_seen = q if seen[q] else last_seen
                 q += 1
-            land, kind, end = (np.nan, np.nan), "unknown", last_seen
+            land, kind, end, land_sd = (np.nan, np.nan), "unknown", last_seen, np.nan
             # the same side hits again soon: a hit in between was missed, the shuttle never
             # landed (calling it a landing ended the rally and threw away the hits after it)
             soon = nxt is not None and nxt["timestamp"] - h["timestamp"] < MISSED_HIT_S
-            if last_seen is not None and not soon:
+            settled, g = None, None
+            if last_seen is not None:
                 # where it settled, not where it was last seen: it may roll or get picked up.
-                # Still for 0.3 s: the top of a high clear seen from behind hangs for ~5 frames
-                settled = landed_at(p, i + 1, last_seen, still_n=max(5, round(0.3 * fps)))
-                g = to_court(H, [p[settled]])[0]
-                if -3 < g[0] < COURT_W + 3 and -3 < g[1] < COURT_L + 3:  # else it left the frame in the air
-                    land, kind, end = tuple(g), "floor", settled
-                    end3 = np.array([g[0], g[1], 0.0])
+                # Still for 0.3 s: the top of a high clear seen from behind hangs for ~5 frames.
+                # The track must run into the still spot (a jump onto it is TrackNet locking on
+                # a shoe or a line). Seen lying there, it landed even if the same side "hits"
+                # again soon: that is the pick-up.
+                q = landed_at(p, i + 1, last_seen, still_px=STILL_PX * img_h / 1080, still_n=max(5, round(0.3 * fps)))
+                before = [j for j in range(max(i + 1, q - 3), q) if seen[j]]
+                # ... and look down at the floor: the top of a high serve hangs still against the
+                # ceiling for 0.3 s too, and the homography "projects" it behind the camera
+                if (q < last_seen and before and np.hypot(*(p[q] - p[before[-1]])) < LAND_JUMP * img_h
+                        and cam.ray(p[q])[2] < -0.01):
+                    g = to_court(H, [p[q]])[0]
+                    settled = q if -3 < g[0] < COURT_W + 3 and -3 < g[1] < COURT_L + 3 else None
+            if settled is not None:
+                land, kind, end = tuple(g), "floor", settled  # seen lying on the floor
+                end3 = np.array([g[0], g[1], 0.0])
+            elif last_seen is not None and not soon:  # lost in the air: carry the fitted flight to the floor
+                pts = [j for j in range(i + 1, last_seen + 1) if real[j]]
+                est = landing.predict(cam, c0, t[pts] - t[i], p[pts], fps, img_h) if len(pts) >= 5 else None
+                if est is not None and -3 < est["xy"][0] < COURT_W + 3 and -3 < est["xy"][1] < COURT_L + 3:
+                    land, kind, land_sd = tuple(est["xy"]), "predicted", est["sd"]
         # speed: last detection within SPEED_WINDOW_S, placed on the straight 3-D line from
         # contact to where the shot ended; level-flight fallback when the view runs along it
         j_end = np.searchsorted(t, t[i] + SPEED_WINDOW_S, side="right")
@@ -463,13 +520,13 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
         kmh, method = None, None
         stop = len(p) if end is None else min(len(p), int(end))  # up to, not including, the next contact
         fit_js = [j for j in range(i + 1, min(stop, i + 1 + round(FIT_MAX_S * fps))) if real[j]]
-        fin = (t[end] - t[i], end3) if np.isfinite(land[0]) and end is not None else None
+        fin = (t[end] - t[i], end3) if kind in ("intercept", "floor") and end is not None else None
         v0 = fit_speed(cam, c0, t[fit_js] - t[i], p[fit_js], fin, fps, img_h) if len(fit_js) >= FIT_MIN_PTS else None
         if v0 is not None:
             kmh, method = v0 * 3.6, "drag_fit"
         elif js:
             j = js[-1]
-            c1 = cam.on_line(p[j], c0, end3) if np.isfinite(land[0]) else None
+            c1 = cam.on_line(p[j], c0, end3) if kind in ("intercept", "floor") else None
             method = "line" if c1 is not None else "level"
             if c1 is None:
                 c1 = cam.at_height(p[j], c0[2])
@@ -490,7 +547,7 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
         rows.append({**h, "speed_kmh_est": None if kmh is None else round(kmh, 1), "speed_method": method,
                      "flight_avg_kmh_est": None if avg is None else round(avg, 1),
                      "shot_type": shot_type(c0, land, kmh, avg) if np.isfinite(land[0]) else "other",
-                     "landing_x": land[0], "landing_y": land[1], "landing_kind": kind,
+                     "landing_x": land[0], "landing_y": land[1], "landing_kind": kind, "landing_sd": land_sd,
                      "end_frame": -1 if end is None else int(end)})
     df = pd.DataFrame(rows)
     if len(df):

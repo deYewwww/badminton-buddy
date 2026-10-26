@@ -53,6 +53,20 @@ def calib_frame(mid, t):
         pipeline.frame(video_of(mid), int(float(t) * info(video_of(mid))["fps"]))
 
 
+def motion(mid):
+    """{moving, shift (fraction of the width), ref_t}, measured once per match and cached."""
+    f = match_dir(mid) / "match.json"
+    m = json.loads(f.read_text())
+    if "motion" not in m:
+        from hud.stabilize import moving
+        i = info(video_of(mid))
+        ref = i["frames"] // 2
+        mv, shift, lost = moving(video_of(mid), ref)
+        m["motion"] = dict(moving=mv, shift=shift, lost=lost, ref_t=round(ref / i["fps"], 1))
+        f.write_text(json.dumps(m, ensure_ascii=False))
+    return m["motion"]
+
+
 def info(video):
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -193,8 +207,10 @@ class Handler(BaseHTTPRequestHandler):
                 p = pipeline.paths(d)
                 calib = json.loads(p["calib"].read_text()) if p["calib"].exists() else None
                 marks = json.loads(p["marks"].read_text()) if p["marks"].exists() else []
-                return self._json(dict(m, id=q["id"], corners=calib and calib["corners"],
+                return self._json(dict(m, id=q["id"], corners=calib and calib["corners"], calib_t=calib and calib.get("t"),
                                        names=pipeline.names(d), marks=marks, done=p["hud"].exists()))
+            if u.path == "/api/motion":  # does the camera pan / cut? (cached: ~5-10 s to measure)
+                return self._json(motion(q["id"]))
             if u.path == "/api/frame":
                 f = calib_frame(q["id"], q.get("t"))
                 ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -269,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                 v = video_of(mid)
                 i = info(v)
                 court.homography(np.float64(b["corners"]))  # raises on a degenerate quad
-                court.save(pipeline.paths(match_dir(mid))["calib"], v, (i["w"], i["h"]), b["corners"])
+                court.save(pipeline.paths(match_dir(mid))["calib"], v, (i["w"], i["h"]), b["corners"], t=b.get("t"))
                 from hud.check import calib_fit  # warn before a 20-minute analysis on a wrong court
                 fits = [calib_fit(bg_frame(mid), b["corners"])]
                 if b.get("t") is not None and float(b["t"]) >= 0:  # the frame the user aligned on

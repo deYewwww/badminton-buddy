@@ -14,7 +14,7 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 - The 136 MB TrackNet checkpoint is stored as models/tracknetv3/TrackNet_best.pt.part*
   (GitHub 100 MB limit); hud/shuttle.py joins them on first use.
 
-## Status / known issues (2026-10-26)
+## Status / known issues (2026-10-27)
 - Auto court detection: correct on the 45° test clip, a 3K MCC hall recording and a broadcast
   rear view. Fails on screen recordings of zoomed/moving playback; the editor's 4 control
   points + top-down mini map are the manual fallback. The 4 points default to the court corners and
@@ -49,6 +49,28 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   33% -> 67-75%, precision 50% -> 80%, shuttle in play 38% -> 63%, hits/s 0.54 -> 1.04;
   same side twice in a row still 27% (all near-near): side assignment is weak at low height.
   Winners/hits could not be hand-labelled from that footage.
-- The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
+- Panning/cut clips are stabilised automatically (pipeline.prepare -> stab.mp4 + calib_stab.json,
+  marks_stab.json; pipeline.work() says which video/calib the stages use). calib.json records t,
+  the frame the corners were set on (= the stabilisation reference). render maps the HUD back onto
+  the original frames per frame (stabilize.frame_maps). Zooming still breaks it.
+- Player positions: smooth.py (per-detection covariance from the homography Jacobian + RTS).
+  Tracker gate/cost use the same covariance. YOLO runs on detect.player_region (crop where the
+  players are; ACE: all 4 seen 34% -> 50% of frames).
+- Last-shot landing: floor if seen lying still (STILL_PX, ray must point down: a serve's apex
+  hangs against the ceiling), else landing.predict (drag+gravity fit carried to z=0, decisive
+  only beyond landing_sure_sd). Same side twice within DOUBLE_S: flip one to the other side if
+  it was in reach, else drop the weaker turn (ACE same-side 26% -> 14%; noisy broadcast copy
+  wrong sides 2 -> 1). Tried and dropped: telling the hitter side by which contact gives the
+  better physical flight fit (both fit equally, 67% on the broadcast rally).
+- Stamina: render.stamina_track (metres, sprints, per-stroke cost incl. "defence", fatigue ceiling).
+- Roboflow/HF/Google Drive downloads are blocked by this environment's network policy (the
+  Roboflow MCP can search/fork/train but export links are on app.roboflow.com). GitHub release
+  assets (e.g. ultralytics yolo11n.pt) and PyPI do download.
+- Frame-level shuttle detector (hud/shuttle_yolo.py, optional): models/shuttle_yolo.pt trained on
+  the Mac by scripts/train_shuttle.py (Roboflow Universe datasets, merged to 1 class). Fills
+  TrackNet gaps <= 1 s along a quadratic path, and searches for the shuttle lying still after a
+  track ends (rejected if a spare already lay there before the shot). A hosted Universe model
+  (my-first-project-i8fww/2) found a plainly visible shuttle TrackNet missed (conf 0.45) but not a
+  faint one (0.10). Not validated end-to-end yet: needs the trained weights.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.

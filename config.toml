@@ -12,6 +12,7 @@ max_gap_s = 3.0          # two hits further apart than this belong to different 
 silence_s = 1.0          # no real shuttle sighting this long = play has stopped
 flight_gap_s = 0.25      # rally ends where the last shot's track breaks off for this long
 max_flight_s = 1.5       # ... and no later than this after the last hit (a high clear's flight)
+landing_sure_sd = 1.0    # a predicted landing (shuttle lost in the air) decides the point only this many sd from a line
 min_shots = 2            # rallies with fewer hits are dropped as noise
 pickup_max_shots = 3     # a rally this short with no shot faster than pickup_max_kmh and no player
 pickup_max_kmh = 70      # faster than pickup_max_mps is a toss-back, not play (initial shot speed;
@@ -28,6 +29,10 @@ pad_after_s = 2.0        # keep tracking this long after play calms down (last s
 pad_before_s = 2.0       # ... and start this early before anyone moves again (the serve; the speed
                          # window notices movement ~0.5 s late, so this is ~1.5 s of real margin)
 min_skip_s = 1.0         # shorter idle stretches are not worth skipping
+yolo_fill = true         # fill TrackNet's short gaps with models/shuttle_yolo.pt when it exists
+                         # (scripts/train_shuttle.py trains it); see hud/shuttle_yolo.py
+far_pass = true          # second TrackNet pass zoomed on the far court, only where it is small in the
+                         # frame (portrait / stabilised / low phone): +~60 % TrackNet time, more far shots
 
 [score]
 # score at the start of the video (for videos that begin mid-match)
@@ -41,14 +46,19 @@ cap = 30
 games_to_win = 2
 
 [stamina]
-# HUD 體力: a game-style meter, NOT a physiological measurement.
-# During a rally: -per_meter for every metre run, -per_sprint_s per second above sprint_speed_mps.
-# Between rallies: +recover_per_s per second. Floored at 0, capped at start.
+# HUD 體力: a game-style meter, NOT a physiological measurement. It drains with what a player
+# does and only partly comes back between rallies, so it trends down over a match.
+# During a rally: -per_meter per metre run. Any time: -per_sprint_s per second faster than
+# sprint_speed_mps. Every stroke costs shot_cost[type] ("defence" = returning a smash).
+# Between rallies: +recover_per_s per second, up to a ceiling that drops by fatigue x what was
+# spent. Calibrated so a long 21-point doubles game (~40 rallies) ends around 30-50.
 start = 100
-per_meter = 1.5
-per_sprint_s = 4.0
+per_meter = 0.5
+per_sprint_s = 1.5
 sprint_speed_mps = 3.0
-recover_per_s = 3.0
+recover_per_s = 0.6
+fatigue = 0.15
+shot_cost = { smash = 3.0, defence = 2.5, clear = 2.0, drive = 1.5, drop = 1.2, net = 1.0, other = 1.2 }
 
 [move]
 window_s = 3.0           # MOVE bar = metres covered in the last window_s ...

@@ -16,7 +16,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
-from hud.court import COURT_L, COURT_W, NET_Y, load, to_court
+from hud.court import CORNERS_M, COURT_L, COURT_W, NET_Y, load, to_court
+from hud.smooth import PX_MIN, PX_NOISE, foot_cov
 from hud.video import frame_times, frames, probe
 
 # (player_id, team, side): side 0 = near half (camera side, y < NET_Y)
@@ -30,6 +31,7 @@ DET_FPS = 10        # pose model runs per second of video (see run)
 MAX_COAST_S = 1.0   # keep emitting the last ground position this long after losing a player
                     # (occluded by partner, or mid-jump: an airborne foot point projects metres too deep)
 HIST_W_M = 0.5
+COST_FLOOR_M = 0.3  # matching cost: distance over the foot point's uncertainty, scaled to metres near
 
 
 @dataclass
@@ -65,7 +67,7 @@ class IdentityTracker:
                 cost = np.array([[self._cost(slots[r], t, dets[i]) for i in cand] for r in live])
                 for a, c in zip(*linear_sum_assignment(cost)):
                     s, d = slots[live[a]], dets[cand[c]]
-                    if np.hypot(*(d["xy"] - s.predict(t))) <= BASE_GATE_M + MAX_SPEED * (t - s.t):
+                    if self._gate(s, t, d):
                         matched[live[a]] = cand[c]
             # start slots as soon as someone is seen, one at a time: at the start one partner is
             # often hidden behind the other, and waiting for both lost the first second of play
@@ -109,8 +111,20 @@ class IdentityTracker:
         return True
 
     @staticmethod
+    def _gate(s, t, d):
+        """Within reach: BASE_GATE_M + MAX_SPEED per second unseen, plus 3 sd of the foot point's
+        own uncertainty (metres per pixel grow ~d^2 towards the far baseline, along the depth)."""
+        r = BASE_GATE_M + MAX_SPEED * (t - s.t)
+        e = d["xy"] - s.predict(t)
+        S = np.eye(2) * r * r + 9 * d.get("cov", np.zeros((2, 2)))
+        return e @ np.linalg.solve(S, e) <= 1.0
+
+    @staticmethod
     def _cost(s, t, d):
-        c = np.hypot(*(d["xy"] - s.predict(t)))
+        # distance in units of what the foot point can tell apart, in metres at a near player
+        e = d["xy"] - s.predict(t)
+        S = np.eye(2) * COST_FLOOR_M ** 2 + d.get("cov", np.zeros((2, 2)))
+        c = COST_FLOOR_M * np.sqrt(e @ np.linalg.solve(S, e))
         if s.hist is not None and d.get("hist") is not None:
             c += HIST_W_M * (1 - cv2.compareHist(s.hist, d["hist"], cv2.HISTCMP_CORREL))
         return c
@@ -259,6 +273,12 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     detect, tracker = PlayerDetector(model, imgsz), IdentityTracker()
     far = far_region(H, size)
     detect.far_box = None if far is None else (int(far[0] / kx), int(far[1] / ky), int(far[2] / kx), int(far[3] / ky))
+    from hud.detect import player_region
+    sample = [f for i, f in enumerate(frames(video, (sw, sh), every=max(1, total // 12))) if i < 12]
+    on_court = lambda q: -SIDE_MARGIN_M < q[0] < COURT_W + SIDE_MARGIN_M and -END_MARGIN_M < q[1] < COURT_L + END_MARGIN_M
+    main = player_region(detect, sample, H, size, on_court, court_px=to_court(np.linalg.inv(H), CORNERS_M))
+    detect.main_box = None if main is None else (int(main[0] / kx), int(main[1] / ky), int(main[2] / kx), int(main[3] / ky))
+    print(f"Players: detecting in {main or 'the whole frame'} of a {w}x{h} frame")
     team = dict((p, tm) for p, tm, _ in SLOTS)
     marks = load_marks(marks, times, H)
     pending = list(marks)  # pinned at the first detection frame at or after each mark
@@ -282,8 +302,9 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
         # feet hidden (ankles not visible) -> position unknown; the slot holds its last ground position
         inside = feet_ok & ((feet[:, 0] > -SIDE_MARGIN_M) & (feet[:, 0] < COURT_W + SIDE_MARGIN_M)
                   & (feet[:, 1] > -END_MARGIN_M) & (feet[:, 1] < COURT_L + END_MARGIN_M))
+        covs = foot_cov(H, feet_px, np.maximum(PX_NOISE * (boxes[:, 3] - boxes[:, 1]), PX_MIN)) if len(boxes) else []
         dets = [dict(xy=feet[i], track_id=int(ids[i]), hist=hists[i], box=boxes[i], foot=feet_px[i],
-                     wrists=wrists[i], app=apps[i])
+                     wrists=wrists[i], app=apps[i], cov=covs[i])
                 for i in np.flatnonzero(inside)]
         while pending and pending[0][0] <= f:
             _, pid, xy = pending.pop(0)
@@ -313,6 +334,8 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     df = apply_marks(df, marks)
     if swaps:  # manual fixes go last, on top of the automatic ones
         df = apply_swaps(df, swaps)
+    from hud.smooth import smooth_players
+    df = smooth_players(df, H)  # camera-aware: far players' depth jitter is metres per pixel
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: rerunning the same video never duplicates rows
     obs = df.groupby("player_id")["observed"].mean().round(3).to_dict() if len(df) else {}
