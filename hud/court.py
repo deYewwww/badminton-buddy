@@ -43,9 +43,11 @@ def homography(corners):
     return cv2.getPerspectiveTransform(np.float32(corners), np.float32(CORNERS_M))
 
 
-def save(path, video, frame_size, corners):
+def save(path, video, frame_size, corners, t=None, **extra):
+    """t: the video time (s) of the frame the corners were set on; None or < 0 = the background."""
     calib = {"video": str(video), "frame_size": list(frame_size),
-             "corners": np.round(np.float64(corners), 1).tolist(), "H": homography(corners).tolist()}
+             "corners": np.round(np.float64(corners), 1).tolist(), "H": homography(corners).tolist(),
+             "t": None if t is None or float(t) < 0 else round(float(t), 3), **extra}
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(calib, indent=1, ensure_ascii=False))
     return calib

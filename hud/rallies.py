@@ -9,7 +9,10 @@ back, not play: dropped. Both signals must agree and both must be measured (play
 speeds known): a short real rally has a fast shot (a kill) or a player sprinting to it.
 Swing detection from the pose model was considered and not used: a swing lasts 0.1-0.15 s and
 the pose model runs 10 times a second, so it would often see no frame of it.
-Point: shuttle landed in the doubles court -> last hitter's team wins it, else the other team.
+Point: the last shot landed in the opponents' half -> the hitter's team wins it; in their own half
+(into the net) or out -> the other team. The landing is where the shuttle was seen lying, or
+where its fitted flight reaches the floor (hits: landing_kind "predicted"); a predicted one
+decides only when it is more than landing_sure_sd of its uncertainty from the nearest line.
 In/out is ESTIMATED: the landing point carries the calibration error (~5-20 cm), so
 line calls are not reliable. Service-court rules are ignored.
 
@@ -29,10 +32,31 @@ from hud import config
 from hud.court import COURT_L, COURT_W, NET_Y
 
 clip = lambda v: float(np.clip(v, 0, 1))
+ENDS = ("floor", "predicted")  # landing kinds that end a rally
 
 
 def in_court(x, y):
     return 0 <= x <= COURT_W and 0 <= y <= COURT_L
+
+
+def in_target(x, y, hit_team):
+    """Landed in the opponents' half (a point for the hitter); own half (into the net) or out
+    is a point for the other side."""
+    return in_court(x, y) and (y >= NET_Y) == (hit_team == "us")
+
+
+def target_margin(x, y, hit_team):
+    """Signed distance (m) to the edge of the opponents' half: > 0 inside."""
+    y0, y1 = (NET_Y, COURT_L) if hit_team == "us" else (0.0, NET_Y)
+    dx, dy = min(x, COURT_W - x), min(y - y0, y1 - y)
+    if dx >= 0 and dy >= 0:
+        return min(dx, dy)
+    return -float(np.hypot(min(dx, 0), min(dy, 0)))
+
+
+def decisive(x, y, hit_team, sd, k):
+    """A predicted landing decides the point only if it is more than k sd from the edge."""
+    return np.isfinite(x) and np.isfinite(sd) and abs(target_margin(x, y, hit_team)) > k * sd
 
 
 def rate(shot_type, land, hit_team, receivers):
@@ -89,12 +113,12 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
         cut = prev is not None and any(prev.frame < c <= s.frame for c in cuts)  # edited clip: new moment
         if s.timestamp < dead_until and not cut:
             continue
-        if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind == "floor"
+        if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind in ENDS
                 or silent_between(int(prev.frame), int(s.frame))):
             rid += 1
         keep.append(k)
         rally_ids.append(rid)
-        if s.landing_kind == "floor":  # rally over once it settles
+        if s.landing_kind in ENDS:  # rally over once it comes down
             end_t = s.timestamp + max(0, s.end_frame - s.frame) / fps
             dead_until = end_t + r["dead_time_s"]
     shots = shots.loc[keep].copy()
@@ -126,10 +150,13 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     shots["placement_label"] = [label(v, cfg) for v in scores]
 
     rows = []
+    sure = r.get("landing_sure_sd", 1.0)
     for rid, g in shots.groupby("rally_id"):
         last = g.iloc[-1]
-        ended = last.landing_kind == "floor"
-        inside = ended and in_court(last.landing_x, last.landing_y)
+        kind = last.landing_kind
+        sd = float(getattr(last, "landing_sd", np.nan)) if kind == "predicted" else 0.0
+        ended = kind == "floor" or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
+        inside = ended and in_target(last.landing_x, last.landing_y, last.team)
         point = (last.team if inside else ("opp" if last.team == "us" else "us")) if ended else None
         end_frame = int(last.end_frame) if last.end_frame >= 0 else int(last.frame)
         if real is not None and not ended:

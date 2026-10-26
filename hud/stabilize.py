@@ -122,6 +122,54 @@ def jump_cuts(Hs, size, cuts):
     return out
 
 
+MOVE_FRAC = 0.02      # the view drifting more than this much of the frame width: stabilise first
+
+
+def moving(video, ref_index, n=24):
+    """Does the camera pan or cut? n frames spread over the clip matched to the reference frame.
+    -> (moving, largest frame-centre shift as a fraction of the width, samples not matched).
+    A tripod clip stays well under MOVE_FRAC (players and the shuttle are a small part of the
+    features); a sample that doesn't match at all is a cut to another view or a fast pan."""
+    cap = cv2.VideoCapture(str(video))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    ref = _frame_at(cap, ref_index)
+    if ref is None:
+        cap.release()
+        return False, 0.0, 0
+    h, w = ref.shape[:2]
+    m = Matcher(ref)
+    c = np.float64([[w / 2, h / 2]]).reshape(-1, 1, 2)
+    shift, lost = 0.0, 0
+    for i in np.linspace(0, max(total - 1, 0), n).astype(int):
+        f = _frame_at(cap, i)
+        if f is None:
+            continue
+        H, _ = m.homography(m._feat(f), m.ref)
+        if H is None:
+            lost += 1
+            continue
+        shift = max(shift, float(np.hypot(*(cv2.perspectiveTransform(c, H).ravel() - c.ravel()))) / w)
+    cap.release()
+    return bool(shift > MOVE_FRAC or lost >= 2), round(shift, 3), lost
+
+
+def frame_maps(video):
+    """Per frame 3x3 original px -> stabilised px of a stabilised video (lost frames hold the last
+    good one), or None for a normal video."""
+    meta = Path(video).with_suffix(".json")
+    try:
+        Hs = json.loads(meta.read_text())["H"] if meta.exists() else None
+    except (OSError, ValueError, KeyError):
+        return None
+    if Hs is None:
+        return None
+    out, last = [], np.eye(3)
+    for H in Hs:
+        last = np.array(H) if H is not None else last
+        out.append(last)
+    return np.array(out)
+
+
 def cuts_of(video):
     """Cut frame indices of a stabilised video (from its .json), else []."""
     meta = Path(video).with_suffix(".json")

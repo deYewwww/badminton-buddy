@@ -36,6 +36,9 @@ TYPE_LABEL = {"smash": "殺球", "clear": "高遠球", "drop": "吊球", "net": 
 MAX_OUT_FPS = 30
 MAX_OUT_SIDE = 1920
 LOCK_S, BANNER_S = 1.0, 1.6
+COST_S = 0.9                 # stroke-cost popup on the name tag
+TRAIL_N = 8                  # shuttle tail, frames
+COST_LABEL = {"defence": "防守", "other": "擊球"}
 MOVE_MS, STOP_MS = 2.0, 0.8  # target marker while faster than this; ARRIVED once below STOP_MS
 
 
@@ -133,21 +136,54 @@ def load(out_dir, F, fps):
     rally_of = np.full(F, -1)
     for i, r in enumerate(rallies.itertuples()):
         rally_of[int(r.start_frame):min(int(r.end_frame) + 1, F)] = i
-    st, sc = cfg["stamina"], cfg["move"]
-    stamina = np.zeros((F, 4))
-    cur = np.full(4, float(st["start"]))
-    for f in range(F):
-        if rally_of[f] >= 0:
-            cur -= st["per_meter"] * step[f] + st["per_sprint_s"] / fps * (speed[f] > st["sprint_speed_mps"])
-        else:
-            cur += st.get("recover_per_s", 0) / fps
-        cur = np.clip(cur, 0, st["start"])
-        stamina[f] = cur
+    sc = cfg["move"]
+    stamina, costs = stamina_track(step, speed, rally_of, shots, fps, cfg["stamina"])
     win = max(1, int(sc["window_s"] * fps))
     move = np.stack([np.convolve(step[:, k], np.ones(win), "full")[:F] for k in range(4)], 1) / sc["full_scale_m"]
-    return dict(pos=pos, box=box, shots=shots, rallies=rallies, shuttle=shuttle, speed=speed, stamina=stamina,
+    return dict(pos=pos, box=box, shots=shots, rallies=rallies, shuttle=shuttle, speed=speed, stamina=stamina, costs=costs,
                 move=np.clip(move, 0, 1), rally_of=rally_of, names=names(out_dir), cfg=cfg,
                 colors={pid: hex_bgr(cfg["colors"][pid]) for pid in PIDS})
+
+
+def stroke_kinds(shots):
+    """Shot type per stroke for the stamina cost: a stroke answering an opponent's smash in the
+    same rally is 'defence' whatever it became."""
+    if not len(shots):
+        return []
+    sh = shots.sort_values("frame")
+    prev = sh.shot_type.shift()
+    same = sh.rally_id.eq(sh.rally_id.shift()) if "rally_id" in sh else pd.Series(True, index=sh.index)
+    kind = np.where(same & prev.eq("smash") & sh.team.ne(sh.team.shift()), "defence", sh.shot_type.fillna("other"))
+    return list(zip(sh.frame.astype(int), sh.player_id, kind))
+
+
+def stamina_track(step, speed, rally_of, shots, fps, st):
+    """Per frame and player stamina (see config [stamina]) -> ((F, 4) values, [(frame, k, cost,
+    kind)] stroke costs for the HUD popups)."""
+    F = len(step)
+    cost_of = st.get("shot_cost", {})
+    hit_at = {}
+    for f, pid, kind in stroke_kinds(shots):
+        if pid in PIDS and 0 <= f < F:
+            hit_at.setdefault(f, []).append((PIDS.index(pid), float(cost_of.get(kind, cost_of.get("other", 0))), kind))
+    start, fat = float(st["start"]), float(st.get("fatigue", 0))
+    cur, ceil = np.full(4, start), np.full(4, start)
+    out, costs = np.zeros((F, 4)), []
+    sprint = st["per_sprint_s"] / fps
+    for f in range(F):
+        spent = sprint * (speed[f] > st["sprint_speed_mps"])
+        if rally_of[f] >= 0:
+            spent = spent + st["per_meter"] * step[f]
+        for k, c, kind in hit_at.get(f, ()):
+            spent = spent + c * (np.arange(4) == k)
+            costs.append((f, k, c, kind))
+        ceil = np.maximum(ceil - fat * spent, 0)
+        cur = cur - spent
+        if rally_of[f] < 0:
+            cur = cur + st.get("recover_per_s", 0) / fps
+        cur = np.clip(cur, 0, ceil)
+        out[f] = cur
+    return out, costs
 
 
 # --- drawing ----------------------------------------------------------------------------
@@ -156,6 +192,7 @@ class Hud:
     def __init__(self, S, H, size, fps):
         self.S, self.fps = S, fps
         self.Ginv = np.linalg.inv(H)
+        self.Ginvs = None
         self.W, self.Hh = size
         self.u = min(size) / 1080  # layout unit: 1 px on a 1080-wide portrait frame
         sc = S["cfg"]["score"]
@@ -163,7 +200,10 @@ class Hud:
 
     def draw(self, img, f):
         S, u = self.S, self.u
+        if self.Ginvs is not None:  # stabilised analysis drawn on the moving original: per-frame court
+            self.Ginv = self.Ginvs[min(f, len(self.Ginvs) - 1)]
         self.floor(img, f)
+        self.trail(img, f)
         self.tags(img, f)
         self.lock_on(img, f)
         self.top_bar(img, f)
@@ -212,6 +252,19 @@ class Hud:
         panel(img, tip[0] - w / 2 - 8 * u, tip[1], tip[0] + w / 2 + 8 * u, tip[1] + 34 * u, alpha=0.85)
         put(img, label, 22 * u, (140, 255, 200), tip[0], tip[1] + 17 * u, "cm")
 
+    def trail(self, img, f, n=TRAIL_N):
+        """The shuttle and a short fading tail of where it just was (tracked frames only)."""
+        P = self.S["shuttle"][max(0, f - n):f + 1]
+        u = self.u
+        pts = [(k, p) for k, p in enumerate(P) if np.isfinite(p[0])]
+        for (k0, a), (k1, b) in zip(pts, pts[1:]):
+            if k1 - k0 > 2:  # don't join across a gap
+                continue
+            w = (k1 + 1) / len(P)
+            cv2.line(img, tuple(np.int32(a)), tuple(np.int32(b)), (int(255 * w), int(240 * w), 120), max(1, int(4 * u * w)), cv2.LINE_AA)
+        if np.isfinite(P[-1, 0]):
+            cv2.circle(img, tuple(np.int32(P[-1])), max(3, int(9 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
+
     def landing_burst(self, img, f):
         """Expanding rings where a scoring shot landed; gold for PERFECT/GREAT placement."""
         S, fps = self.S, self.fps
@@ -252,6 +305,13 @@ class Hud:
             put(img, S["names"][pid], 26 * u, col, x + 14 * u, y + 8 * u)
             put(img, f"{stam:.0f}", 26 * u, RED if stam < 15 else WHITE, x + tw - 12 * u, y + 8 * u, "rt")
             bar(img, x + 14 * u, y + th - 16 * u, tw - 28 * u, 7 * u, stam / 100, col)
+            for g, kk, c, kind in self.recent_costs(f, k):  # what that stroke cost, floating up
+                age = (f - g) / self.fps
+                put(img, f"-{c:.1f} {TYPE_LABEL.get(kind, '') or COST_LABEL.get(kind, '')}".rstrip(), 22 * u,
+                    (90, 170, 255), x + tw - 12 * u, y - 4 * u - age * 30 * u, "rb")
+
+    def recent_costs(self, f, k, span=COST_S):
+        return [c for c in self.S.get("costs", ()) if c[1] == k and 0 <= f - c[0] <= span * self.fps]
 
     def current_shot(self, f):
         """Last shot of the rally in progress (or just finished) at frame f, or None."""
@@ -397,21 +457,46 @@ class Hud:
         put(img, f"{S['names']['P1']} 追蹤中", 15 * u, GREY, x0 + 16 * u, y0 + ph - 10 * u, "lb")
 
 
+def to_original(box, shuttle, M):
+    """Boxes (F, 4, 4) and shuttle points (F, 2) found on the stabilised view -> the original
+    frame's pixels (M[f]: original -> stabilised)."""
+    box, shuttle = box.copy(), shuttle.copy()
+    for f in range(min(len(box), len(M))):
+        A = np.linalg.inv(M[f])
+        if np.isfinite(shuttle[f, 0]):
+            shuttle[f] = court.to_court(A, [shuttle[f]])[0]
+        for k in range(box.shape[1]):
+            b = box[f, k]
+            if np.isfinite(b[0]):
+                c = court.to_court(A, [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]])
+                box[f, k] = [*c.min(0), *c.max(0)]
+    return box, shuttle
+
+
 def render(video, out_dir, progress=lambda x: None):
     from hud.pipeline import paths
     from hud.video import frames, probe
+    from hud.pipeline import work
+    from hud.stabilize import frame_maps
     p = paths(out_dir)
-    H, calib = court.load(p["calib"])
+    wv, wc, _ = work(out_dir, video)
+    H, calib = court.load(wc)
     w, h, fps, F = probe(video)
+    M = frame_maps(wv) if wv != Path(video) else None  # original px -> stabilised px, per frame
     # output: long side <= MAX_OUT_SIDE, <= MAX_OUT_FPS; decoded and shrunk in hardware
     k = min(1.0, MAX_OUT_SIDE / max(w, h))
     W, Hh = int(round(w * k / 2) * 2), int(round(h * k / 2) * 2)
     kx, ky = W / w, Hh / h
     every = max(1, round(fps / MAX_OUT_FPS))  # 60 -> 30 fps; a 31.5 fps (VFR) clip keeps every frame
     S = load(out_dir, F, fps)
+    if M is not None:
+        S["box"], S["shuttle"] = to_original(S["box"], S["shuttle"], M)
     S["box"] = S["box"] * [kx, ky, kx, ky]
     S["shuttle"] = S["shuttle"] * [kx, ky]
-    hud = Hud(S, H @ np.diag([1 / kx, 1 / ky, 1]), (W, Hh), fps)
+    K = np.diag([1 / kx, 1 / ky, 1])
+    hud = Hud(S, H @ K, (W, Hh), fps)
+    if M is not None:
+        hud.Ginvs = np.linalg.inv(H @ M[np.minimum(np.arange(F), len(M) - 1)] @ K)
     tmp = p["hud"].with_suffix(".tmp.mp4")
     enc = ["-c:v", "h264_videotoolbox", "-b:v", "10M"] if _has_videotoolbox() else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{Hh}",

@@ -173,10 +173,17 @@ async function openMatch(id) {
   $("#mt").value = marks.length ? marks[0].t : 0;
   loadMarkFrame();
   G = null; handles = []; sel = -1;
+  if (M.calib_t != null) $("#t").value = M.calib_t;  // the frame the saved corners were set on
   await loadFrame();
   loadVenues();
-  if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。", "ok"); }
-  else autoDetect();
+  // a panning / cut clip: the background median is a blur, so calibrate on one real frame; the
+  // analysis stabilises every frame onto it (pipeline.prepare)
+  let mv = null;
+  try { msg("檢查鏡頭有沒有移動…"); mv = await api("/api/motion?id=" + M.id); } catch (e) {}
+  const moveMsg = mv && mv.moving ? `偵測到鏡頭有轉動或剪接（畫面最多偏移 ${(mv.shift * 100).toFixed(0)}%）：請在一個清楚的畫面上對齊四個角（不要用背景圖），分析時會自動把每一幀穩定到這個畫面，HUD 仍畫在原始影片上。` : "";
+  if (mv && mv.moving && +$("#t").value < 0) { $("#t").value = mv.ref_t; await loadFrame(); }
+  if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。" + (moveMsg ? " " + moveMsg : ""), "ok"); }
+  else { await autoDetect(); if (moveMsg) msg(moveMsg + "（已先自動偵測一次，請檢查黃線）", "ok"); }
   showResult(M.done);
 }
 

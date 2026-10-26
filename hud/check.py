@@ -35,13 +35,14 @@ def calib_fit(frame, corners, tol=8, native=None):
 
 
 def run(out_dir, video=None, draw=True):
-    from hud.pipeline import background, paths
+    from hud.pipeline import background, paths, work
     p = paths(out_dir)
     rep, warn = {}, []
     if not p["calib"].exists():
         return dict(warnings=["還沒校正球場"])
-    H, calib = court.load(p["calib"])
-    video = video or calib["video"]
+    wv, wc, _ = work(out_dir, video or json.loads(p["calib"].read_text())["video"])
+    H, calib = court.load(wc)
+    video = wv if wc != p["calib"] else (video or calib["video"])
     bg = background(video)
     from hud.stabilize import native_size
     fit, plausible = calib_fit(bg, calib["corners"], native=native_size(video))
