@@ -18,7 +18,7 @@ def paths(out_dir):
     return {k: o / v for k, v in dict(
         calib="calib.json", players="players.parquet", shuttle="shuttle.parquet", hits="hits.parquet",
         shots="shots.parquet", rallies="rallies.parquet", fixes="point_fixes.csv", names="names.json",
-        hud="hud.mp4", timing="timing.json", check="check.json",
+        hud="hud.mp4", timing="timing.json", check="check.json", marks="marks.json",
         check_png="check.png").items()}
 
 
@@ -71,7 +71,8 @@ def analyse(video, out_dir, progress=print, start="players"):
         took[stage], last = round(time.time() - last, 1), time.time()
     if "players" in todo:
         progress(0.0, "偵測球員…")
-        players.run(video, p["calib"], p["players"], progress=lambda x: progress(0.45 * x, "偵測球員…"))
+        players.run(video, p["calib"], p["players"], progress=lambda x: progress(0.45 * x, "偵測球員…"),
+                    marks=p["marks"])
         lap("players")
     if "shuttle" in todo:
         progress(0.45, "追蹤羽球…")

@@ -4,7 +4,7 @@ import pandas as pd
 
 import pandas as pd
 
-from hud.players import APP_COLS, IdentityTracker, apply_swaps, fill_skipped
+from hud.players import APP_COLS, IdentityTracker, apply_marks, apply_swaps, fill_skipped
 from hud.reid import fix_identities
 
 
@@ -40,6 +40,35 @@ def test_partner_hidden_at_start():
         if f == 0:
             assert "P1" in out and "P2" not in out
     assert out["P1"][1] is not None and out["P2"][1] is not None and out["P2"][0][0] > 4
+
+
+def test_mark_fixes_swapped_partners():
+    """Partners started the wrong way round (P1 on the right). One click on the right-hand
+    player as P2 swaps the slots, and they stay swapped while both keep moving."""
+    trk = IdentityTracker()
+    far = [dict(xy=np.array([2.0, 10.0]), track_id=7, hist=None), dict(xy=np.array([4.0, 10.0]), track_id=8, hist=None)]
+    dets = lambda f: [dict(xy=np.array([4.5, 2.0 + 0.01 * f]), track_id=1, hist=None),
+                      dict(xy=np.array([1.5, 2.0 + 0.01 * f]), track_id=2, hist=None)] + far
+    trk.update(0.0, [dets(0)[0]] + far)              # only the right-hand player seen: becomes P1
+    out = trk.update(0.02, dets(1))
+    assert out["P1"][0][0] > 4
+    assert trk.pin("P2", 0.04, (4.5, 2.02))          # user: the right-hand one is P2
+    for f in range(2, 40):
+        out = trk.update(f * 0.02, dets(f))
+    assert out["P2"][0][0] > 4 and out["P1"][0][0] < 2, out
+    assert not trk.pin("P3", 1.0, (3.0, 2.0))        # an opponent can't be on the near half
+
+
+def test_apply_marks_overrides_reid():
+    """Labels wrong from frame 0 to 99; a mark at frame 10 fixes them up to the next mark
+    (frame 100), which confirms the labels from there on."""
+    rows = [dict(frame=f, player_id=p, x_m=x, y_m=2.0) for f in range(200) for p, x in (("P1", 1.0), ("P2", 5.0))]
+    df = pd.DataFrame(rows)
+    df.loc[df.frame < 100, "player_id"] = df.loc[df.frame < 100, "player_id"].map({"P1": "P2", "P2": "P1"})
+    out = apply_marks(df, [(10, "P1", np.array([1.1, 2.0])), (100, "P1", np.array([1.0, 2.0]))])
+    left = out[out.x_m < 3]
+    assert (left[left.frame >= 10].player_id == "P1").all()
+    assert (left[left.frame < 10].player_id == "P2").all()  # before the first mark: untouched
 
 
 class _Cam:  # height straight from the box: head pixel y=0 -> 2.0 m, y=400 -> 1.6 m

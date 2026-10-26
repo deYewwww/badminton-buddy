@@ -25,6 +25,9 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 - `hud check out/<match>` (also run at the end of analyse): calibration fit + camera plausibility,
   players seen per side, shuttle %, hits. A wrong calibration empties everything downstream
   (far players dropped as off-court -> no hits -> no rallies/score).
+- Player marks (editor step 3 -> marks.json: feet clicked at a time): players.run pins the tracker
+  slot there (swapping with the partner it was confused with), and apply_marks overrides reid
+  from each mark to the next one for that pair.
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.

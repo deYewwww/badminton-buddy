@@ -190,8 +190,9 @@ class Handler(BaseHTTPRequestHandler):
                 m = json.loads((d / "match.json").read_text())
                 p = pipeline.paths(d)
                 calib = json.loads(p["calib"].read_text()) if p["calib"].exists() else None
+                marks = json.loads(p["marks"].read_text()) if p["marks"].exists() else []
                 return self._json(dict(m, id=q["id"], corners=calib and calib["corners"],
-                                       names=pipeline.names(d), done=p["hud"].exists()))
+                                       names=pipeline.names(d), marks=marks, done=p["hud"].exists()))
             if u.path == "/api/frame":
                 f = calib_frame(q["id"], q.get("t"))
                 ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -262,6 +263,11 @@ class Handler(BaseHTTPRequestHandler):
                     fits.append(calib_fit(calib_frame(mid, b["t"]), b["corners"]))
                 fit, plausible = max(f[0] for f in fits), fits[0][1]
                 return self._json({"ok": True, "on_line": round(fit, 2), "plausible": plausible})
+            if u.path == "/api/marks":  # player feet clicked in the editor: [{t, pid, x, y}]
+                marks = [dict(t=round(float(m["t"]), 2), pid=m["pid"], x=round(float(m["x"]), 1), y=round(float(m["y"]), 1))
+                         for m in b.get("marks", []) if m.get("pid") in ("P1", "P2", "P3", "P4")]
+                pipeline.paths(match_dir(mid))["marks"].write_text(json.dumps(marks))
+                return self._json({"ok": True, "n": len(marks)})
             if u.path == "/api/names":
                 return self._json(pipeline.names(match_dir(mid), b.get("names", {})))
             if u.path == "/api/run":

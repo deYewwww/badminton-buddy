@@ -23,6 +23,10 @@
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
   .hint { color:var(--dim); font-size:13px; }
   #runMsg { white-space:pre-line; }
+  #markWrap { border-radius:8px; overflow:hidden; background:#0a0f12; }
+  #mk { cursor:crosshair; }
+  .names label.pick { outline:2px solid var(--accent); border-radius:6px; }
+  .names label { cursor:pointer; padding:4px; }
   .ok { color:var(--good); } .err { color:var(--bad); }
   #drop { border:2px dashed var(--edge); border-radius:10px; padding:26px; text-align:center; color:var(--dim); cursor:pointer; }
   #drop.over { border-color:var(--accent); color:var(--text); }
@@ -73,8 +77,12 @@
   </section>
 
   <section id="s3" class="off">
-    <h2>③ 球員名字 <span>近端（靠鏡頭）是我隊，左邊是 1 號</span></h2>
+    <h2>③ 球員 <span>選一位球員，在畫面上點他兩腳中間；哪裡認錯人，就到那個時間再點一次</span></h2>
     <div class="names" id="names"></div>
+    <div class="row"><span class="hint">畫面：</span><input id="mt" type="range" min="0" max="1" step="0.1" value="0"><span id="mtLabel" class="hint">0:00.0</span></div>
+    <div class="row hint" id="markMsg">建議在第一個回合開始前，把 4 位球員各點一次（點完一位會自動換下一位）。近端（靠鏡頭）是我隊，遠端是對手。</div>
+    <div id="markWrap"><canvas id="mk"></canvas></div>
+    <div id="markList" class="row"></div>
   </section>
 
   <section id="s4" class="off">
@@ -154,6 +162,10 @@ async function openMatch(id) {
   $("#t").max = Math.max(0, M.duration - 0.1).toFixed(1);
   $("#t").value = -1;
   names(M.names);
+  marks = M.marks || [];
+  $("#mt").max = Math.max(0, M.duration - 0.1).toFixed(1);
+  $("#mt").value = marks.length ? marks[0].t : 0;
+  loadMarkFrame();
   G = null; handles = []; sel = -1;
   await loadFrame();
   if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。", "ok"); }
@@ -416,16 +428,78 @@ $("#save").onclick = async () => {
   catch (e) { msg(e.message, "err"); }
 };
 
-// ---- names
+// ---- players: names, and feet clicked at a time (marks.json) that pin who is who
+const PIDS = ["P1", "P2", "P3", "P4"];
+let pick = "P1", marks = [], mimg = new Image();
 function names(n) {
   $("#names").innerHTML = "";
-  for (const k of ["P1", "P2", "P3", "P4"]) {
+  for (const k of PIDS) {
     const l = document.createElement("label");
     l.innerHTML = `<span class="dot" style="background:${COLORS[k]}"></span><input type="text" value="${n[k]}" maxlength="12">`;
-    l.querySelector("input").onchange = e => api("/api/names", {id:M.id, names:{[k]:e.target.value}});
+    l.querySelector("input").onchange = e => { M.names[k] = e.target.value; api("/api/names", {id:M.id, names:{[k]:e.target.value}}); drawMarks(); };
+    l.onclick = () => { pick = k; names(M.names); };
+    if (k === pick) l.classList.add("pick");
     $("#names").appendChild(l);
   }
 }
+const mk = $("#mk"), mkx = mk.getContext("2d");
+let MK = 1;  // image px -> canvas px
+async function loadMarkFrame() {
+  const t = +$("#mt").value;
+  $("#mtLabel").textContent = fmt(t);
+  await new Promise(ok => { mimg.onload = ok; mimg.src = `/api/frame?id=${M.id}&t=${t}`; });
+  const w = $("#markWrap").clientWidth;
+  MK = Math.min(w / M.w, window.innerHeight * 0.7 / M.h);
+  const dpr = window.devicePixelRatio || 1;
+  mk.style.width = M.w * MK + "px"; mk.style.height = M.h * MK + "px";
+  mk.width = M.w * MK * dpr; mk.height = M.h * MK * dpr;
+  mkx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawMarks();
+}
+$("#mt").onchange = loadMarkFrame;
+function drawMarks() {
+  if (!mimg.complete) return;
+  mkx.drawImage(mimg, 0, 0, M.w * MK, M.h * MK);
+  const t = +$("#mt").value;
+  for (const m of marks) {
+    if (Math.abs(m.t - t) > 0.3) continue;  // marks on the frame shown
+    const x = m.x * MK, y = m.y * MK;
+    mkx.beginPath(); mkx.arc(x, y, 9, 0, 7); mkx.fillStyle = COLORS[m.pid]; mkx.fill();
+    mkx.lineWidth = 2; mkx.strokeStyle = "#fff"; mkx.stroke();
+    mkx.font = "bold 14px sans-serif"; mkx.lineWidth = 4; mkx.strokeStyle = "#000";
+    mkx.strokeText(M.names[m.pid], x + 12, y - 8); mkx.fillStyle = COLORS[m.pid]; mkx.fillText(M.names[m.pid], x + 12, y - 8);
+  }
+  $("#markList").innerHTML = marks.length ? '<span class="hint">已標記：</span>' : "";
+  for (const [i, m] of marks.entries()) {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="dot" style="background:${COLORS[m.pid]}"></span> ${fmt(m.t)} ${M.names[m.pid]} <span title="刪除">✕</span>`;
+    b.onclick = e => {
+      if (e.target.title) { marks.splice(i, 1); saveMarks(); return drawMarks(); }
+      $("#mt").value = m.t; loadMarkFrame();
+    };
+    $("#markList").appendChild(b);
+  }
+}
+const saveMarks = () => api("/api/marks", {id:M.id, marks}).catch(e => markMsg(e.message, "err"));
+function markMsg(t, cls = "") { $("#markMsg").className = "row hint " + cls; $("#markMsg").textContent = t; }
+mk.onclick = e => {
+  if (!G) return markMsg("請先在 ② 校正球場。", "err");
+  const r = mk.getBoundingClientRect(), p = [(e.clientX - r.left) / MK, (e.clientY - r.top) / MK];
+  const toCourt = homography(corners(), CORN), c = proj(toCourt, p);  // image px -> court m
+  const far = c[1] >= NET, wantFar = pick === "P3" || pick === "P4";
+  if (c[0] < -2 || c[0] > W_C + 2 || c[1] < -3 || c[1] > L_C + 3)
+    return markMsg("這個點不在球場附近。要點在球員兩腳中間的地板上；如果明明點對了，代表 ② 的校正還不準。", "err");
+  if (far !== wantFar)
+    return markMsg(`${M.names[pick]} 是${wantFar ? "對手，應該在網子另一邊（遠端）" : "我隊，應該在網子這一邊（近端）"}。`, "err");
+  const t = +$("#mt").value;
+  marks = marks.filter(m => !(m.pid === pick && Math.abs(m.t - t) < 0.3));
+  marks.push({t, pid:pick, x:p[0], y:p[1]});
+  marks.sort((a, b) => a.t - b.t);
+  saveMarks();
+  markMsg(`已標記 ${M.names[pick]}（${fmt(t)}）。重新「開始分析」才會生效。`, "ok");
+  pick = PIDS[(PIDS.indexOf(pick) + 1) % 4];
+  names(M.names); drawMarks();
+};
 
 // ---- run & results
 async function run(start) {
