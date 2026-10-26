@@ -40,6 +40,14 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   The same alignment per segment is the way to support panning/cut videos (not built yet).
 - Portrait clips: TrackNet gets a 16:9 window (shuttle.window), not the squeezed frame.
 - User's own footage (2026-10-26): phone ~0.7 m high, portrait 0.5x, gimbal panning, edited cuts.
+- hud stabilize (stabilize.py): panning/cut clips -> one reference view (ORB homography per frame,
+  chained fallback, per-segment floor snap); cuts from image jumps + view-direction jumps, used as
+  hard boundaries by hits/rallies. Pixel thresholds scale with the LENS short side (native_size),
+  not the canvas. hud eval (evaluate.py): truth JSON -> rally/hit/score metrics + label-free checks.
+- ACE clip (user, 115 s, 0.7 m portrait, gimbal + cuts), stabilised, 5 rounds: rallies found
+  33% -> 67-75%, precision 50% -> 80%, shuttle in play 38% -> 63%, hits/s 0.54 -> 1.04;
+  same side twice in a row still 27% (all near-near): side assignment is weak at low height.
+  Winners/hits could not be hand-labelled from that footage.
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.

@@ -69,6 +69,8 @@ def _read(video):
 
 
 CUT_DIFF, CUT_CORR = 30.0, 0.3  # thumbnail mean |diff| above / phase correlation below: a cut
+JUMP_CUT = 0.05       # ... or the view direction jumps this much of the frame width in one frame.
+                      # User's clip: real cuts 41-228 px (720 wide), the fastest gimbal pans <= 31 px
 
 
 def _thumb(f):
@@ -103,6 +105,30 @@ def homographies(video, ref_index):
         out.append((H, n, how))
         prev, prev_H = feat, H if H is not None else prev_H
     return out, cuts
+
+
+def jump_cuts(Hs, size, cuts):
+    """Add frames where the frame centre jumps on the reference view (a cut keeping the scene, so
+    the image-difference test misses it) to cuts; duplicates within 3 frames merged."""
+    w, h = size
+    c = np.float64([[w / 2, h / 2]]).reshape(-1, 1, 2)
+    pos = np.array([cv2.perspectiveTransform(c, H).ravel() if H is not None else [np.nan, np.nan] for H, *_ in Hs])
+    jump = np.r_[0, np.hypot(*np.diff(pos, axis=0).T)]
+    found = sorted(set(cuts) | set(np.flatnonzero(np.nan_to_num(jump) > JUMP_CUT * w).tolist()))
+    out = []
+    for i in found:
+        if not out or i - out[-1] > 3:
+            out.append(int(i))
+    return out
+
+
+def cuts_of(video):
+    """Cut frame indices of a stabilised video (from its .json), else []."""
+    meta = Path(video).with_suffix(".json")
+    try:
+        return list(json.loads(meta.read_text()).get("cuts", [])) if meta.exists() else []
+    except (OSError, ValueError):
+        return []
 
 
 def _frame_at(cap, i):
@@ -159,6 +185,7 @@ def run(video, out, ref_time, corners=None):
     w, h, fps, _ = probe(video)
     ref_index = int(round(ref_time * fps))
     Hs, cuts = homographies(video, ref_index)
+    cuts = jump_cuts(Hs, (w, h), cuts)
     (ox, oy), (cw, ch) = canvas(Hs, (w, h))
     T = np.array([[1, 0, ox], [0, 1, oy], [0, 0, 1.0]])
     hows = [x[2] for x in Hs]
@@ -189,6 +216,18 @@ def run(video, out, ref_time, corners=None):
                 how=hows)
     out.with_suffix(".json").write_text(json.dumps(meta))
     return None if corners is None else np.float64(corners) + [ox, oy]
+
+
+def native_size(video):
+    """(w, h) of the camera behind a stabilised video (its source clip), or None for a normal one."""
+    meta = Path(video).with_suffix(".json")
+    if not meta.exists():
+        return None
+    try:
+        m = json.loads(meta.read_text())
+        return tuple(probe(m["video"])[:2]) if "canvas" in m else None
+    except (OSError, ValueError, KeyError, SystemExit):
+        return None
 
 
 def residual(video_stab, n=40, region=None):

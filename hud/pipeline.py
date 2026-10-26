@@ -84,8 +84,9 @@ def analyse(video, out_dir, progress=print, start="players"):
         lap("hits")
     if "rallies" in todo:
         progress(0.75, "切分回合、計分…")
+        from hud.stabilize import cuts_of
         rallies.run(p["hits"], p["players"], p["shots"], p["rallies"], shuttle_path=p["shuttle"],
-                    point_fixes=p["fixes"])
+                    point_fixes=p["fixes"], cuts=cuts_of(video))
         lap("rallies")
     if "hud" in todo:
         from hud import render

@@ -99,6 +99,8 @@ def test_initial_speed_under_drag():
         c0e = cam.near_vertical(proj(c0), np.array(c0[:2]) + [0.3, -0.2])
         v = fit_speed(cam, c0e, dt, px, (dt[-1], X[-1]), 30)
         assert v is not None and abs(v * 3.6 / kmh - 1) < 0.08, (kmh, v and v * 3.6)
+    # fast start over a long flight stays finite (step capped by k*v0*h)
+    assert np.isfinite(flight(139.0, np.array([0, 1.0, 0]), np.array([1.5]))).all()
     # the fallback's correction: 0.1 s average of a 300 km/h smash back to 300
     t = 0.1
     avg = np.log1p(0.22 * 83.33 * t) / 0.22 / t
@@ -143,6 +145,7 @@ def test_tracknet_window():
     assert (w, h) == (1280, 720) and x0 == -280 and y0 == 560
     proj, f, C = synthetic_camera()
     cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    assert window(1154, 2050, native=(720, 1280))[2:] == (1280, 720)  # stabilised canvas: sized by the lens
     x0, y0, w, h = window(1440, 1080, cam)  # 4:3: crop height, bottom near the court's
     assert (w, h) == (1440, 810) and 0 <= y0 <= 270
 

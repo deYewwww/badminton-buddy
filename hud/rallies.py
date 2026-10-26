@@ -64,7 +64,7 @@ def label(score, cfg):
     return "PERFECT" if score >= p["perfect"] else "GREAT" if score >= p["great"] else "GOOD" if score >= p["good"] else "OK"
 
 
-def build(shots, players, cfg, shuttle=None):
+def build(shots, players, cfg, shuttle=None, cuts=()):
     r = cfg["rally"]
     if shots.empty:  # no hits found (e.g. shuttle not tracked): no rallies, not a crash
         return shots, pd.DataFrame()
@@ -85,10 +85,11 @@ def build(shots, players, cfg, shuttle=None):
         return pd.Series(~seg).groupby(seg.cumsum()).sum().max() >= quiet
     keep, rally_ids, rid, dead_until = [], [], 0, -np.inf
     for k, s in shots.iterrows():
-        if s.timestamp < dead_until:
-            continue
         prev = shots.loc[keep[-1]] if keep else None
-        if (prev is None or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind == "floor"
+        cut = prev is not None and any(prev.frame < c <= s.frame for c in cuts)  # edited clip: new moment
+        if s.timestamp < dead_until and not cut:
+            continue
+        if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind == "floor"
                 or silent_between(int(prev.frame), int(s.frame))):
             rid += 1
         keep.append(k)
@@ -139,6 +140,9 @@ def build(shots, players, cfg, shuttle=None):
             if len(seen_after):
                 end_frame = int(last.frame) + int(seen_after[gaps[0]] if len(gaps) else seen_after[-1])
             end_frame = min(end_frame, int(last.frame + r["max_flight_s"] * fps))  # no shot flies longer
+        nxt_cut = [c for c in cuts if c > last.frame]
+        if nxt_cut:
+            end_frame = min(end_frame, int(nxt_cut[0]) - 1)
         rows.append(dict(rally_id=rid, start_frame=int(g.frame.iat[0]), end_frame=end_frame,
                          start_ts=g.timestamp.iat[0], shot_count=len(g),
                          last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=ended,
@@ -195,11 +199,11 @@ def _fps(shots):
 
 
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
-        point_fixes=None):
+        point_fixes=None, cuts=()):
     from hud import score
     cfg = config.load(cfg_path)
     shuttle = pd.read_parquet(shuttle_path) if shuttle_path else None
-    shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle)
+    shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle, cuts)
     if len(rallies):
         fixes = pd.read_csv(point_fixes) if point_fixes and Path(point_fixes).exists() else None
         rallies = score.apply(rallies, cfg, fixes)

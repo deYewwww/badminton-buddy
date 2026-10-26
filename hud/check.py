@@ -16,7 +16,7 @@ import pandas as pd
 from hud import court
 
 
-def calib_fit(frame, corners, tol=8):
+def calib_fit(frame, corners, tol=8, native=None):
     """Fraction of the court model (inside the frame) that lies within tol px (at the 1280 px
     working size) of a detected painted line, and whether a phone standing behind the near
     baseline could have produced it.
@@ -30,7 +30,7 @@ def calib_fit(frame, corners, tol=8):
     dist = court._signed_dist(court.line_mask(small))
     G = cv2.getPerspectiveTransform(np.float32(court.CORNERS_M), np.float32(np.float64(corners) * s))[None]
     _, frac = court._score(G, dist, court._samples(25), tol)
-    _, ok = court._plausible(G, (w, h))
+    _, ok = court._plausible(G, (w, h), lens_side=max(native) * s if native else None)
     return float(frac[0]), bool(ok[0])
 
 
@@ -43,7 +43,8 @@ def run(out_dir, video=None, draw=True):
     H, calib = court.load(p["calib"])
     video = video or calib["video"]
     bg = background(video)
-    fit, plausible = calib_fit(bg, calib["corners"])
+    from hud.stabilize import native_size
+    fit, plausible = calib_fit(bg, calib["corners"], native=native_size(video))
     rep["calib"] = dict(corners=calib["corners"], on_line=round(fit, 2), camera_plausible=plausible)
     if fit < 0.3 and not plausible:
         warn.append(f"球場校正可能錯了：黃線只有 {fit:.0%} 落在偵測到的白線上。")

@@ -37,6 +37,18 @@ uv run hud run 影片.mp4
 
 用 `--from rallies` 可以只從某一步重跑。
 
+鏡頭有轉動（雲台追蹤）或剪接過的影片：先穩定化成固定視角，再照常分析（`--ref` 是用來校正的那一秒，選一段鏡頭不動的畫面）：
+
+```bash
+uv run hud stabilize 影片.mp4 --ref 63 --out data/穩定.mp4
+```
+
+驗證準確度：照 `hud/evaluate.py` 開頭的格式寫一個 truth.json（回合起訖、得分方、擊球），然後：
+
+```bash
+uv run hud eval out/<影片> truth.json
+```
+
 用存好的場地（不做自動偵測）：
 
 ```bash

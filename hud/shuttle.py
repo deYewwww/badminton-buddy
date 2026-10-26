@@ -63,16 +63,19 @@ def _load_models(device):
     return nets
 
 
-def window(fw, fh, cam=None, margin_m=1.5):
+def window(fw, fh, cam=None, margin_m=1.5, native=None):
     """(x0, y0, w, h) frame region fed to TrackNet, or None for the whole frame.
     TrackNet was trained on 16:9 broadcast frames shrunk to 512x288. A portrait phone clip
     squeezed into that loses 78 % of its height and the shuttle with it (13.8 % of frames
     found on a 720x1280 doubles clip). So other shapes get a 16:9 window as tall as the
     frame's short side allows (720x1280 -> 1280x720: the same shuttle size in pixels as the
-    training footage), padded at the sides, its bottom just below the court floor."""
-    if abs(fw / fh - 16 / 9) < 0.05:
+    training footage), padded at the sides, its bottom just below the court floor.
+    native: the camera's own (w, h) when the frame is a stabilised canvas: the window is sized
+    by the lens (1280x720 for a 720x1280 phone), not by the bigger canvas, which shrank the
+    shuttle to 62 % of its training size and found it in 38 % of play."""
+    if native is None and abs(fw / fh - 16 / 9) < 0.05:
         return None
-    h = int(min(fh, round(max(fw, fh) * 9 / 16)))
+    h = int(min(fh, round(max(native or (fw, fh)) * 9 / 16)))
     w = int(round(h * 16 / 9))
     bottom = fh
     if cam is not None:
@@ -358,10 +361,12 @@ def run(video, out, players_path=None, calib_path=None):
             box = court_airspace(cam)
         except ValueError:  # calibration without a valid focal length: keep everything
             pass
-    win = window(width, height, cam)
+    from hud.stabilize import native_size
+    win = window(width, height, cam, native=native_size(video))
     if win is not None:
         print(f"TrackNet window {win} of a {int(width)}x{int(height)} frame")
-    df = clean(run_tracknet(video, idle=idle, box=box, win=win), times, height, fps)
+    lens = native_size(video) or (width, height)
+    df = clean(run_tracknet(video, idle=idle, box=box, win=win), times, min(lens), fps)  # px scale: short side
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     det = int((df.visible & ~df.interpolated & ~df.inpainted).sum())

@@ -157,7 +157,8 @@ def flight(v0, u, taus, k=DRAG_K, h=1 / 150, max_steps=60):
     s = ln(1 + k v0 t) / k ignores that, and the ~0.1 m it is off by in 0.25 s is 10-20 px
     to a phone 10 m away, enough to pull a smash fit 35 % low."""
     taus = np.clip(np.asarray(taus, float), 0, None)
-    h = max(h, taus.max() / max_steps)  # long flights: coarser steps, RK4 stays well under 1 cm
+    h = max(h, taus.max() / max_steps)  # long flights: coarser steps, RK4 stays well under 1 cm...
+    h = min(h, 0.3 / (k * max(v0, 1e-6)))  # ...but k*v0*h <= 0.3, or a fast start blows RK4 up
     n = int(taus.max() / h) + 2
     vx, vy, vz = v0 * u[0], v0 * u[1], v0 * u[2]
     x = y = z = 0.0
@@ -228,6 +229,8 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
     def resid(q):
         X = path(q)
         img, depth = cam.project_many(X[:len(dt)])
+        if not np.isfinite(img).all():
+            return np.full(2 * len(dt) + (3 if end is not None else 0), 1e3)
         r = ((img - px) / sig).ravel()
         r = np.where(np.repeat(depth, 2) > 0.1, r, 1e3)  # behind the camera: reject
         if end is not None:
@@ -328,7 +331,8 @@ def shot_type(contact, land, kmh, avg_kmh=None):
     return "other"
 
 
-def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
+def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=(), frame_h=None):
+    """img_h: the pixel scale (camera short side, 1080 at 1080p); frame_h: the frame's own height."""
     p = shuttle[["x_px", "y_px"]].to_numpy(float, copy=True)
     # multi-court halls: TrackNet happily follows other courts' shuttles; keep only what is
     # inside the image of the air box above our court
@@ -371,7 +375,7 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
             found.append((i, opts))
     # exchanges: split where the shuttle vanished for a while or play paused. A high clear
     # that leaves through the top of the frame and comes back down is still in play.
-    top = TOP_EDGE * img_h
+    top = TOP_EDGE * (frame_h or img_h)
 
     def gone_s(j, i):
         longest, q = 0, j
@@ -392,7 +396,8 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         if cur:
             j = cur[-1][0]
             gone = gone_s(j, i) * fps
-            if gone / fps >= RESET_GONE_S or t[i] - t[j] > serve_answer_s * 2:
+            cut = any(j < c <= i for c in cuts)  # edited clip: the two sides of a cut are different moments
+            if cut or gone / fps >= RESET_GONE_S or t[i] - t[j] > serve_answer_s * 2:
                 groups.append(cur)
                 cur = []
         cur.append((i, opts))
@@ -500,7 +505,13 @@ def run(shuttle_path, players_path, calib_path, out):
     H, calib = load(calib_path)
     cam = Camera(H, calib["frame_size"])
     fps = 1 / np.median(np.diff(shuttle.timestamp)) if len(shuttle) > 1 else 30
-    df = detect(shuttle, players, H, cam, fps, calib["frame_size"][1], config.load()["rally"]["serve_answer_s"])
+    from hud.stabilize import cuts_of, native_size
+    # pixel thresholds are tuned at 1080p and scale with the camera's short side: the frame's own
+    # height over-scaled a portrait clip 1.8x, and a stabilised canvas (2050 high) more, so the far
+    # court's small turns never registered as hits
+    lens = native_size(calib["video"]) or calib["frame_size"]
+    df = detect(shuttle, players, H, cam, fps, min(lens), config.load()["rally"]["serve_answer_s"],
+                cuts=cuts_of(calib["video"]), frame_h=calib["frame_size"][1])
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     print(f"Wrote {out}: {len(df)} hits")
