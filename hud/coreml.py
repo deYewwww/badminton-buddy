@@ -1,7 +1,7 @@
 """CoreML copies of the two networks, so they run on the Mac's Neural Engine / GPU through
 CoreML instead of PyTorch-on-MPS. TrackNet is ~85 % of the analysis compute.
 
-    uv run hud export-coreml      # once, on the Mac (coremltools is a macOS dependency)
+    uv run --with numpy==2.3.5 hud export-coreml      # once, on the Mac
 
 writes models/tracknetv3/TrackNet.mlpackage and models/yolo11n-pose.mlpackage. They are
 used when present. The TrackNet copy is checked against PyTorch on the first window of every
@@ -32,6 +32,13 @@ def export(imgsz=960):
                    convert_to="mlprogram")
     m.save(str(TRACKNET_ML))
     print(f"Wrote {TRACKNET_ML}")
+    import numpy
+    if tuple(int(x) for x in numpy.__version__.split(".")[:2]) > (2, 3):
+        # Ultralytics' CoreML export needs numpy <= 2.3.5: with 2.4 its attention block fails to
+        # convert ("only 0-dimensional arrays can be converted to Python scalars")
+        print(f"YOLO 的 CoreML 匯出需要 numpy <= 2.3.5（目前 {numpy.__version__}），這次先跳過，"
+              f"球員偵測繼續用 PyTorch。要匯出 YOLO 請改用：\n  uv run --with numpy==2.3.5 hud export-coreml")
+        return
     from ultralytics import YOLO
 
     from hud.detect import MODEL
@@ -40,7 +47,7 @@ def export(imgsz=960):
         if out != YOLO_ML:
             out.replace(YOLO_ML)
         print(f"Wrote {YOLO_ML}")
-    except Exception as e:  # 2026-10: coremltools 8.3/9.0 fail on its attention block with torch 2.14
+    except Exception as e:  # anything else: PyTorch it is
         print(f"YOLO CoreML export failed ({e}); the pose model stays on PyTorch")
 
 
