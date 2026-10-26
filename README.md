@@ -46,6 +46,12 @@ uv run hud check out/<影片>
 
 它會寫出 `check.json` 和 `check.png`（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）。分析完成時也會自動檢查，有問題會顯示在「開始分析」旁邊。
 
+Mac 上第一次用之前，建議先跑一次（約 1 分鐘）：把 TrackNet 轉成 CoreML，用 Neural Engine 跑羽球追蹤。程式會在每支影片開頭自動和原版比對，不一致就自動改回原版，結果不會變。
+
+```bash
+uv run hud export-coreml
+```
+
 想讓同 Wi-Fi 的手機也能開：`uv run hud web --lan --password 自己設的密碼`。
 
 ## 拍攝建議
@@ -72,7 +78,7 @@ uv run hud check out/<影片>
 |---|---|
 | 球場偵測（約 6 秒） | 多幀合成背景 → 找白線 → 所有線的組合一次批次評分 → 檢查相機位置是否合理 → 試各種線的對應（單打線／雙打線）→ 貼齊 |
 | 球員 | YOLO11n-pose（nano），每秒 10 次，中間插值；遠端半場再裁切放大偵測一次 |
-| 羽球 | TrackNetV3，每一幀、半精度；死球時間（至少 3 位球員都站著或慢走）跳過，前後各留 2 秒，球還在空中就繼續追。設定在 `config.toml` 的 `[shuttle]` |
+| 羽球 | TrackNetV3（有 CoreML 版就用 Neural Engine），每一幀、半精度；死球時間（至少 3 位球員都站著或慢走）跳過，前後各留 2 秒，球還在空中就繼續追。設定在 `config.toml` 的 `[shuttle]` |
 | HUD 影片 | 單一程序、硬體 H.264 編碼；輸出長邊最多 1920 px、最多 30 fps |
 
 所有解碼和縮小都交給 Mac 的硬體（VideoToolbox），所以 CPU 幾乎不受影片解析度影響。

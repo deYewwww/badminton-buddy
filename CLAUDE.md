@@ -28,6 +28,12 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 - Player marks (editor step 3 -> marks.json: feet clicked at a time): players.run pins the tracker
   slot there (swapping with the partner it was confused with), and apply_marks overrides reid
   from each mark to the next one for that pair.
+- Hitter side: assign_sides (Viterbi over an exchange: geo_fit reach + ray miss + wrist vs a
+  same-side penalty). Speed: fit_speed, RK4 drag+gravity fitted to the whole flight's pixels;
+  fallback = 0.1 s window average converted with from_window_avg. Weights/thresholds were tuned
+  on ONE broadcast singles rally (3 versions) -> re-check on real doubles phone footage.
+- TrackNet on CoreML when models/tracknetv3/TrackNet.mlpackage exists (`hud export-coreml`, Mac);
+  vouched for against PyTorch per video. YOLO CoreML export currently fails upstream.
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.
