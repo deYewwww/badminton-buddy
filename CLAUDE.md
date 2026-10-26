@@ -53,6 +53,12 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   marks_stab.json; pipeline.work() says which video/calib the stages use). calib.json records t,
   the frame the corners were set on (= the stabilisation reference). render maps the HUD back onto
   the original frames per frame (stabilize.frame_maps). Zooming still breaks it.
+- Stabilisation speed (user: a 5-min clip sat on 穩定畫面 for ages, no progress shown): frames
+  are stabilised at <= MAX_SIDE 1920 (stab.json "scale"; its H maps ORIGINAL px -> stabilised
+  px, native_size returns the lens in stabilised px), decoded/scaled by ffmpeg (VideoToolbox),
+  written with h264_videotoolbox on the Mac, and report % for both passes. ORB features on a
+  FEAT_SIDE 640 image whatever the size (on half of a 1920 frame RANSAC took wrong homographies
+  before a cut).
 - Player positions: smooth.py (per-detection covariance from the homography Jacobian + RTS).
   Tracker gate/cost use the same covariance. YOLO runs on detect.player_region (crop where the
   players are; ACE: all 4 seen 34% -> 50% of frames).

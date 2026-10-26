@@ -28,7 +28,10 @@ import numpy as np
 
 from hud.video import probe
 
-SCALE = 0.5           # features are found at half size
+SCALE = 0.5           # features are found at half size (of the working size below) ...
+FEAT_SIDE = 640       # ... and on an image no bigger than this (long side)
+MAX_SIDE = 1920       # frames are stabilised at most this big (long side): a 4K clip warped and re-encoded
+                      # at full size took hours; nothing downstream needs more (YOLO 960, TrackNet 512)
 MIN_INLIERS = 40
 MAX_CANVAS = 1.6      # canvas at most this many times the frame, each way
 
@@ -37,10 +40,14 @@ class Matcher:
     def __init__(self, ref):
         self.orb = cv2.ORB_create(3000)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        # features on a FEAT_SIDE image whatever the clip's size: found on half of a 1920 frame,
+        # RANSAC accepted wrong homographies before a cut (jumps every few frames); at the size
+        # tuned on the user's 720x1280 clip it doesn't
+        self.scale = min(SCALE, FEAT_SIDE / max(ref.shape[:2]))
         self.ref = self._feat(ref)
 
     def _feat(self, img):
-        g = cv2.cvtColor(cv2.resize(img, None, fx=SCALE, fy=SCALE, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        g = cv2.cvtColor(cv2.resize(img, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         return self.orb.detectAndCompute(g, None)
 
     def homography(self, a, b):
@@ -51,21 +58,11 @@ class Matcher:
         good = [m for m, *r in self.bf.knnMatch(da, db, k=2) if r and m.distance < 0.75 * r[0].distance]
         if len(good) < MIN_INLIERS:
             return None, len(good)
-        pa = np.float32([ka[m.queryIdx].pt for m in good]) / SCALE
-        pb = np.float32([kb[m.trainIdx].pt for m in good]) / SCALE
-        A, inl = cv2.findHomography(pa, pb, cv2.RANSAC, 3.0)
+        pa = np.float32([ka[m.queryIdx].pt for m in good]) / self.scale
+        pb = np.float32([kb[m.trainIdx].pt for m in good]) / self.scale
+        A, inl = cv2.findHomography(pa, pb, cv2.RANSAC, 3.0 * SCALE / self.scale)
         n = int(inl.sum()) if inl is not None else 0
         return (A, n) if A is not None and n >= MIN_INLIERS else (None, n)
-
-
-def _read(video):
-    cap = cv2.VideoCapture(str(video))
-    while True:
-        ok, f = cap.read()
-        if not ok:
-            break
-        yield f
-    cap.release()
 
 
 CUT_DIFF, CUT_CORR = 30.0, 0.3  # thumbnail mean |diff| above / phase correlation below: a cut
@@ -77,17 +74,34 @@ def _thumb(f):
     return cv2.cvtColor(cv2.resize(f, (180, 320), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)[:200].astype(np.float32)
 
 
-def homographies(video, ref_index):
-    """-> (list of (3x3 frame px -> reference px, inliers, how) per frame, cut frame indices)."""
+def work_size(w, h, max_side=MAX_SIDE):
+    """(scale, (w, h)) the clip is stabilised at."""
+    k = min(1.0, max_side / max(w, h))
+    return k, (int(round(w * k / 2) * 2), int(round(h * k / 2) * 2))
+
+
+def _scaled(f, size):
+    return f if f is None or f.shape[1::-1] == tuple(size) else cv2.resize(f, size, interpolation=cv2.INTER_AREA)
+
+
+def homographies(video, ref_index, size=None, progress=None):
+    """-> (list of (3x3 frame px -> reference px, inliers, how) per frame, cut frame indices),
+    on frames of the given size (decoded and shrunk by the hardware where it can).
+    progress(fraction) every 100 frames."""
+    from hud.video import frames
+    w, h, _, n = probe(video)
+    size = size or (w, h)
     cap = cv2.VideoCapture(str(video))
     cap.set(cv2.CAP_PROP_POS_FRAMES, ref_index)
     ok, ref = cap.read()
     cap.release()
     if not ok:
         raise SystemExit(f"cannot read reference frame {ref_index} of {video}")
-    m = Matcher(ref)
+    m = Matcher(_scaled(ref, size))
     out, prev, prev_H, cuts, prev_t = [], None, None, [], None
-    for i, f in enumerate(_read(video)):
+    for i, f in enumerate(frames(video, size)):
+        if progress and i % 100 == 0:
+            progress(i / max(n, 1))
         th = _thumb(f)
         if prev_t is not None:
             (_, _), corr = cv2.phaseCorrelate(prev_t, th)
@@ -185,7 +199,7 @@ def _frame_at(cap, i):
     return f if ok else None
 
 
-def floor_fixes(video, Hs, cuts, T, size, corners, min_len=30, samples=7, chunk=None):
+def floor_fixes(video, Hs, cuts, T, size, corners, min_len=30, samples=7, chunk=None, work=None):
     """Per segment between cuts: 3x3 canvas->canvas correction putting that segment's painted
     lines on the reference court (identity when snapping doesn't improve the fit)."""
     from hud import court
@@ -201,7 +215,7 @@ def floor_fixes(video, Hs, cuts, T, size, corners, min_len=30, samples=7, chunk=
         if b - a >= min_len:
             imgs = []
             for i in np.linspace(a, b - 1, samples).astype(int):
-                f, H = _frame_at(cap, i), Hs[i][0]
+                f, H = _scaled(_frame_at(cap, i), work) if work else _frame_at(cap, i), Hs[i][0]
                 if f is not None and H is not None:
                     imgs.append(cv2.warpPerspective(f, T @ H, size))
             if imgs:
@@ -227,12 +241,18 @@ def canvas(Hs, size):
     return (int(ox), int(oy)), (int(cw), int(ch))
 
 
-def run(video, out, ref_time, corners=None):
-    """Write the stabilised video to out (.mp4) and out.json (per-frame homographies, offset).
-    corners: the reference frame's court corners -> returned shifted onto the canvas."""
-    w, h, fps, _ = probe(video)
+def run(video, out, ref_time, corners=None, progress=None, max_side=MAX_SIDE):
+    """Write the stabilised video to out (.mp4) and out.json (per-frame homographies from the
+    ORIGINAL frame's pixels to the stabilised ones, offset, the working scale).
+    corners: the reference frame's court corners (original px) -> returned on the canvas.
+    progress(fraction, what) while it works: two passes over the clip (measure, then write)."""
+    W0, H0, fps, n = probe(video)
+    k, (w, h) = work_size(W0, H0, max_side)
+    S = np.diag([k, k, 1.0])  # original px -> working px
+    corners = None if corners is None else np.float64(corners) * k
     ref_index = int(round(ref_time * fps))
-    Hs, cuts = homographies(video, ref_index)
+    say = progress or (lambda x, what: None)
+    Hs, cuts = homographies(video, ref_index, (w, h), lambda x: say(0.5 * x, "measure"))
     cuts = jump_cuts(Hs, (w, h), cuts)
     (ox, oy), (cw, ch) = canvas(Hs, (w, h))
     T = np.array([[1, 0, ox], [0, 1, oy], [0, 0, 1.0]])
@@ -241,39 +261,51 @@ def run(video, out, ref_time, corners=None):
           f"{hows.count('lost')} lost; {len(cuts)} cuts; canvas {cw}x{ch}, reference at +({ox},{oy})")
     K_of = np.repeat(np.eye(3)[None], len(Hs), 0)
     if corners is not None:  # floor-plane correction per segment (camera moved between takes)
-        fixes = floor_fixes(video, Hs, cuts, T, (cw, ch), np.float64(corners) + [ox, oy])
+        fixes = floor_fixes(video, Hs, cuts, T, (cw, ch), np.float64(corners) + [ox, oy], work=(w, h))
         for a, b, K, _ in fixes:
             K_of[a:b] = K
         big = [f"{a / fps:.1f}s {sh:.0f}px" for a, b, K, sh in fixes if sh > 5]
         print(f"Floor corrected in {sum(sh > 0.5 for *_, sh in fixes)}/{len(fixes)} pieces; > 5 px at: {', '.join(big) or 'none'}")
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
+    from hud.render import _has_videotoolbox
+    from hud.video import frames
+    # Mac: the hardware encoder (the CPU one was most of the time on long clips); high bitrate, the
+    # shuttle is a few pixels
+    enc = (["-c:v", "h264_videotoolbox", "-b:v", "24M"] if _has_videotoolbox()
+           else ["-c:v", "libx264", "-crf", "17", "-preset", "veryfast"])
     ff = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{cw}x{ch}",
-                           "-r", f"{fps:.4f}", "-i", "-", "-c:v", "libx264", "-crf", "17", "-preset", "veryfast",
-                           "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
+                           "-r", f"{fps:.4f}", "-i", "-", *enc, "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
     last = None
-    for i, (f, (H, _, _)) in enumerate(zip(_read(video), Hs)):
+    for i, (f, (H, _, _)) in enumerate(zip(frames(video, (w, h)), Hs)):
         H = H if H is not None else last  # lost: hold the last good warp
         last = H if H is not None else last
         img = cv2.warpPerspective(f, K_of[i] @ T @ H, (cw, ch)) if H is not None else np.zeros((ch, cw, 3), np.uint8)
         ff.stdin.write(img.tobytes())
+        if i % 100 == 0:
+            say(0.5 + 0.5 * i / max(n, 1), "write")
     ff.stdin.close()
     ff.wait()
-    meta = dict(video=str(video), ref_time=ref_time, offset=[ox, oy], canvas=[cw, ch], cuts=cuts,
-                H=[None if H is None else np.round(K_of[i] @ T @ H, 6).tolist() for i, (H, *_) in enumerate(Hs)],
+    meta = dict(video=str(video), ref_time=ref_time, offset=[ox, oy], canvas=[cw, ch], cuts=cuts, scale=k,
+                H=[None if H is None else np.round(K_of[i] @ T @ H @ S, 8).tolist() for i, (H, *_) in enumerate(Hs)],
                 how=hows)
     out.with_suffix(".json").write_text(json.dumps(meta))
     return None if corners is None else np.float64(corners) + [ox, oy]
 
 
 def native_size(video):
-    """(w, h) of the camera behind a stabilised video (its source clip), or None for a normal one."""
+    """(w, h) of the camera behind a stabilised video (its source clip, at the scale it was
+    stabilised at), or None for a normal one."""
     meta = Path(video).with_suffix(".json")
     if not meta.exists():
         return None
     try:
         m = json.loads(meta.read_text())
-        return tuple(probe(m["video"])[:2]) if "canvas" in m else None
+        if "canvas" not in m:
+            return None
+        w, h = probe(m["video"])[:2]
+        k = m.get("scale", 1.0)  # the lens in the stabilised video's pixels
+        return (w * k, h * k)
     except (OSError, ValueError, KeyError, SystemExit):
         return None
 
