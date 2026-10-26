@@ -121,6 +121,8 @@ uv run --with roboflow python scripts/train_shuttle.py --quick   # 先試跑：3
 uv run --with roboflow python scripts/train_shuttle.py           # 正式：15 個 epoch，大約一個晚上
 ```
 
+訓練中隨時按 Ctrl+C 都可以停，會保留到目前為止最好的那一個 epoch，一樣寫出 `models/shuttle_yolo.pt`。`--quick` 只用 25% 的圖片，是用來確認流程能跑，不是拿來用的模型；只想跑 3 輪請用 `--epochs 3`。
+
 腳本會下載 Roboflow Universe 上的公開羽球資料集（約 3–4 GB，CC BY 4.0），合併成單一類別，用 M2 訓練 YOLO11n，完成後寫出 `models/shuttle_yolo.pt`。之後每次分析都會自動使用：
 
 - **補空缺**：TrackNet 兩次看到球之間最多 1 秒的空缺，只在球的軌跡附近搜尋，信心夠高、又落在軌跡上才採用。

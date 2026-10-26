@@ -12,9 +12,11 @@ Run on the Mac (Apple GPU via MPS), once:
   3. trains YOLO11n from the COCO checkpoint at 640 px and copies the best weights to
      models/shuttle_yolo.pt, which hud/shuttle.py then uses automatically
 
-Time on an M2 8 GB: roughly 10-20 min per epoch for the default datasets; --epochs 15 (the
-default) is an evening. --quick (3 epochs, 25 % of the images) checks that everything works in
-under an hour. Close other apps: training uses most of the memory.
+Time on an M2 8 GB: roughly 10-20 min per epoch for the default datasets (a rough estimate);
+--epochs 15 (the default) is an evening. Ctrl+C stops at any time and keeps the best epoch so
+far, so it can simply run until you need the Mac. --quick (3 epochs on 25 % of the images) is
+only a check that downloading and training work, not a usable model. Close other apps:
+training uses most of the memory.
 
 Why a frame detector at all: TrackNet looks at 3 frames + a background and finds the shuttle
 by its motion, which is right for a tiny blurred shuttle but misses some that are plainly
@@ -110,10 +112,15 @@ def train(yml, epochs, imgsz, batch, fraction):
     device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
     model = YOLO("yolo11n.pt")  # COCO weights, downloaded by Ultralytics on first use
     # small objects: no mosaic shrinking in the last epochs, mild augmentation (the datasets are augmented)
-    r = model.train(data=str(yml), epochs=epochs, imgsz=imgsz, batch=batch, device=device, fraction=fraction,
+    best = DS / "runs" / "shuttle" / "weights" / "best.pt"  # rewritten after every epoch that improves
+    try:
+        model.train(data=str(yml), epochs=epochs, imgsz=imgsz, batch=batch, device=device, fraction=fraction,
                     project=str(DS / "runs"), name="shuttle", exist_ok=True, patience=5, close_mosaic=3,
                     workers=2, cache=False, plots=False)
-    best = Path(r.save_dir) / "weights" / "best.pt"
+    except KeyboardInterrupt:  # Ctrl+C: keep the best epoch so far
+        print("\nStopped: keeping the best epoch so far.")
+    if not best.exists():
+        raise SystemExit("No epoch finished yet: nothing to keep.")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(best, OUT)
     print(f"Wrote {OUT}. hud/shuttle.py uses it from the next analysis on.")
