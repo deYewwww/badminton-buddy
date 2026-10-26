@@ -257,7 +257,10 @@ class Handler(BaseHTTPRequestHandler):
                 court.homography(np.float64(b["corners"]))  # raises on a degenerate quad
                 court.save(pipeline.paths(match_dir(mid))["calib"], v, (i["w"], i["h"]), b["corners"])
                 from hud.check import calib_fit  # warn before a 20-minute analysis on a wrong court
-                fit, plausible = calib_fit(bg_frame(mid), b["corners"])
+                fits = [calib_fit(bg_frame(mid), b["corners"])]
+                if b.get("t") is not None and float(b["t"]) >= 0:  # the frame the user aligned on
+                    fits.append(calib_fit(calib_frame(mid, b["t"]), b["corners"]))
+                fit, plausible = max(f[0] for f in fits), fits[0][1]
                 return self._json({"ok": True, "on_line": round(fit, 2), "plausible": plausible})
             if u.path == "/api/names":
                 return self._json(pipeline.names(match_dir(mid), b.get("names", {})))

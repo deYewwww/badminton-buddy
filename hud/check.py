@@ -16,14 +16,20 @@ import pandas as pd
 from hud import court
 
 
-def calib_fit(frame, corners):
-    """Fraction of the court model (inside the frame) that lies on painted lines, and whether
-    a phone standing behind the near baseline could have produced it."""
+def calib_fit(frame, corners, tol=8):
+    """Fraction of the court model (inside the frame) that lies within tol px (at the 1280 px
+    working size) of a detected painted line, and whether a phone standing behind the near
+    baseline could have produced it.
+
+    Only the second is a verdict. The first depends on line_mask() finding the paint, which
+    fails on exactly the footage where auto-detection fails (screen recordings, blur, a
+    background median spoiled by camera movement), so a correct hand calibration can score
+    low: it is shown for information and never overrides the user's points."""
     small, s = court._small(frame)
     h, w = small.shape[:2]
     dist = court._signed_dist(court.line_mask(small))
     G = cv2.getPerspectiveTransform(np.float32(court.CORNERS_M), np.float32(np.float64(corners) * s))[None]
-    _, frac = court._score(G, dist, court._samples(25), 3)
+    _, frac = court._score(G, dist, court._samples(25), tol)
     _, ok = court._plausible(G, (w, h))
     return float(frac[0]), bool(ok[0])
 
@@ -39,8 +45,8 @@ def run(out_dir, video=None, draw=True):
     bg = background(video)
     fit, plausible = calib_fit(bg, calib["corners"])
     rep["calib"] = dict(corners=calib["corners"], on_line=round(fit, 2), camera_plausible=plausible)
-    if fit < 0.5:
-        warn.append(f"球場校正可能錯了：黃線只有 {fit:.0%} 落在白線上（正確時通常 > 70%）。請重新校正。")
+    if fit < 0.3 and not plausible:
+        warn.append(f"球場校正可能錯了：黃線只有 {fit:.0%} 落在偵測到的白線上。")
     if not plausible:
         warn.append("球場校正推算出的相機位置不合理（不在近端底線後方、或高度不對），角點很可能放錯。")
 
