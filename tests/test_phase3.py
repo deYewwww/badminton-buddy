@@ -120,6 +120,18 @@ def test_floor_landing_near_a_line_is_not_called():
     assert close.point_team is None and close.ended_on_floor
 
 
+def test_shuttle_drawn_only_in_play():
+    from hud.render import in_play_only
+    F, fps = 300, 30
+    P = np.c_[np.linspace(100, 700, F), np.full(F, 400.0)]  # flying ...
+    P[200:240] = [500.0, 500.0]                             # ... held still for 1.3 s
+    rallies = pd.DataFrame(dict(start_frame=[60], end_frame=[260], manual=[False]))
+    out = in_play_only(P, rallies, fps)
+    shown = np.isfinite(out[:, 0])
+    assert not shown[:50].any() and shown[60:200].all()      # before the rally: hidden
+    assert not shown[200:240].any() and not shown[290:].any()  # still in the air / after it: hidden
+
+
 def test_manual_point_fills_a_missed_rally():
     from hud import config, score
     from hud.rallies import add_manual

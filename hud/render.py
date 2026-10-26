@@ -140,6 +140,7 @@ def load(out_dir, F, fps):
     rally_of = np.full(F, -1)
     for i, r in enumerate(rallies.itertuples()):
         rally_of[int(r.start_frame):min(int(r.end_frame) + 1, F)] = i
+    shuttle = in_play_only(shuttle, rallies, fps, lens_short(out_dir))
     sc = cfg["move"]
     stamina, costs = stamina_track(step, speed, rally_of, shots, fps, cfg["stamina"], accelerations(pos, fps))
     moving = move_states(speed, fps)
@@ -183,6 +184,31 @@ def shown_track(sh, F, short=1080, min_run=TRACK_MIN, max_gap=2, max_step=0.1):
         _keep(out, fr, P, run, min_run)
         run = [i]
     _keep(out, fr, P, run, min_run)
+    return out
+
+
+def in_play_only(shuttle, rallies, fps, short=1080, before_s=0.3, after_s=0.6, still_s=0.4, still_px=8):
+    """Hide the shuttle where it isn't in play: outside the rallies (picked up, carried, tossed
+    to the server: a ball drifting about between points, which the user saw as the tracker
+    "floating" at 1:29 and 1:38), and wherever it hangs nearly still for still_s (held in a
+    hand, or TrackNet stuck on something: a flying shuttle is never that slow for 0.4 s)."""
+    out = shuttle.copy()
+    F = len(out)
+    play = np.zeros(F, bool)
+    for r in rallies.itertuples():
+        if getattr(r, "manual", False) is True:
+            continue
+        play[max(0, int(r.start_frame - before_s * fps)):min(F, int(r.end_frame + after_s * fps) + 1)] = True
+    out[~play] = np.nan
+    w = max(2, int(still_s * fps))
+    tol = still_px * short / 1080
+    ok = np.isfinite(out[:, 0])
+    hide = np.zeros(F, bool)
+    for f in range(F - w + 1):
+        seg = out[f:f + w]
+        if ok[f:f + w].all() and np.hypot(*(seg - seg.mean(0)).T).max() <= tol:
+            hide[f:f + w] = True  # the whole still window, its first and last frames too
+    out[hide] = np.nan
     return out
 
 
