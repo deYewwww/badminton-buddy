@@ -44,6 +44,25 @@ def test_auto_detect_with_corners_off_screen():
     assert after < before and after < 0.15, (before, after)
 
 
+def test_auto_detect_low_resolution():
+    """The scene at 854x480, blurred, noisy and JPEG-compressed (cheap phone, heavy compression).
+    Detection used to run at native size there: on a real 480p clip it found nothing, here its
+    worst point was 0.16 m off. Scaled up to the working size: < 0.12 m."""
+    proj = synth()
+    img = np.full((1080, 1920, 3), (60, 140, 40), np.uint8)
+    for a, b in LINES:
+        cv2.line(img, tuple(proj(a).astype(int)), tuple(proj(b).astype(int)), (235, 235, 235), 4)
+    small = cv2.GaussianBlur(cv2.resize(img, (854, 480), interpolation=cv2.INTER_AREA), (3, 3), 0.8)
+    small = np.clip(small + np.random.default_rng(0).normal(0, 4, small.shape), 0, 255).astype(np.uint8)
+    small = cv2.imdecode(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 35])[1], 1)
+    k = 854 / 1920
+    probe = np.array([proj((x, y)) for x in (0.5, 3, 5.5) for y in (1, 4, 6, 9, 12)]) * k
+    truth = np.array([(x, y) for x in (0.5, 3, 5.5) for y in (1, 4, 6, 9, 12)])
+    found, frac = auto_detect(small)
+    assert found is not None and frac > 0.8, frac
+    assert np.abs(to_court(homography(found), probe) - truth).max() < 0.12
+
+
 def test_check_flags_squeezed_calibration():
     """The user's real failure: near corners pulled in to the frame edge, court squeezed
     towards the net. Line overlap alone stays high-ish; the camera check must catch it."""

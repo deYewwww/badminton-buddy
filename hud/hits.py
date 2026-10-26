@@ -2,10 +2,12 @@
 
 Hit  = the 2-D shuttle path turns sharply (angle between incoming and outgoing velocity
        over a short window), AND a player is within racket reach of the shuttle in the image.
-       The hitter is whoever's wrist came nearest the shuttle (best_per_team); when the two
-       sides score within TURN_MARGIN, the side whose turn it is. Forcing the sides to
-       alternate over a whole exchange was tried and dropped: one stray candidate flipped
-       every attribution in it.
+       Which side hit is decided for a whole exchange at once (assign_sides, Viterbi): each
+       hit costs per side by evidence (can that side's player physically reach the shuttle,
+       how far the ray passes from them, their nearest wrist), and the same side hitting twice
+       in a row costs a penalty, a smaller one where the shuttle was lost between the two
+       (a missed hit is likely there). Deciding hit by hit with "sides alternate" as the tie
+       break was tried: one missed hit flipped every attribution after it.
 
 SPEED IS AN ESTIMATE. One camera sees the shuttle as a ray, not a 3-D point.
   - contact point: point on the ray nearest the vertical line above the hitter's feet
@@ -39,7 +41,7 @@ SPEED_JUMP = 2.0      # ...or the shuttle leaves this many times faster than it 
 AIR_MARGIN_M, AIR_TOP_M = 1.5, 9.0  # shuttle must be inside this box over our court
 MIN_PX_S = 250        # at 1080p: in or out image speed must reach this, else the 'turn' is jitter
 WINDOW_S = 0.06       # half-window for incoming/outgoing velocity
-MIN_GAP_S = 0.25      # two hits can't be closer than this
+MIN_GAP_S = 0.18      # two hits can't be closer than this (a smash returned at the net: 0.23 s)
 RESET_GONE_S = 0.5    # shuttle unseen this long since the last hit -> new rally, alternation restarts
 REACH_W, REACH_UP = 0.6, 0.7  # racket reach as fractions of the player box height
 REACH_DOWN = 0.2      # below the feet line too: lunges and dives take the racket that low
@@ -54,11 +56,16 @@ FIT_MAX_REL_SD = 0.4   # reject a fit whose v0 standard error is larger than thi
                       # is 20-40 % low
 FIT_PX = 2.0          # TrackNet centre noise at 1080p, px (scales the residuals)
 FIT_V0 = (3.0, 139.0)  # m/s bounds, 11..500 km/h
-REACH_M = 1.6         # a hitter's racket is at most this far (horizontally) from their feet
+REACH_M = 2.0         # a hitter's racket is at most this far (horizontally) from their feet: a full
+                      # lunge (step + arm + racket) reaches 1.5-1.8 m; 1.6 lost a far-court retrieve
 GEO_Z = (-0.2, 3.6)   # ... at this height: below the floor or above a jump smash = not them
 TAKEOFF_S = 0.4       # hitter position = median observed stance over this long before the hit
 WRIST_WIN_S = 0.07     # nearest wrist to the shuttle within this long of the hit
-TURN_MARGIN = 0.15     # wrist scores this close: the side whose turn it is takes the hit
+GEO_COST = 3.0        # assign_sides: that side's player can't reach the shuttle (geo_fit fails)
+MISS_W = 0.5          # ... per metre the ray passes from their vertical
+WRIST_W = 1.0         # ... times (1 - nearest-wrist score)
+SAME_COST = 2.0       # the same side hits twice in a row (only possible if a hit was missed)
+SAME_LOST_COST = 0.8  # ... where the shuttle went unseen for >= 3 frames between the two
 SUPPORT_S, SUPPORT_MIN = 0.17, 0.3  # around a hit, >= 30% of frames must be real detections
 MAX_KMH = 450
 MAX_GAP_GONE_S = 0.3  # sighting gap longer than this after a rally's last hit = shuttle left play
@@ -261,6 +268,33 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
     return None
 
 
+def assign_sides(g, p, cam, real):
+    """g: [(frame, {team: (wrist score, player row)})] of one exchange -> team per hit, the
+    cheapest sequence under the costs above (Viterbi over the two sides)."""
+    teams = ("us", "opp")
+
+    def emit(i, opts, team):
+        if team not in opts:
+            return np.inf
+        ok, miss = geo_fit(cam, p[i], opts[team][1])
+        return (0 if ok else GEO_COST) + MISS_W * miss + WRIST_W * (1 - opts[team][0])
+    cost = np.array([emit(g[0][0], g[0][1], tm) for tm in teams])
+    back = []
+    for (j, _), (i, opts) in zip(g, g[1:]):
+        lost = (~real[j + 1:i]).sum() >= 3
+        same = SAME_LOST_COST if lost else SAME_COST
+        trans = np.where(np.eye(2, dtype=bool), same, 0.0)  # same side twice: penalty
+        tot = cost[:, None] + trans                          # from (rows) -> to (cols)
+        back.append(tot.argmin(0))
+        cost = tot.min(0) + np.array([emit(i, opts, tm) for tm in teams])
+    k = int(np.argmin(cost))
+    path = [k]
+    for b in reversed(back):
+        k = int(b[k])
+        path.append(k)
+    return [teams[k] for k in reversed(path)]
+
+
 def in_reach(px, players, with_dist=False):
     """Players whose racket-reach zone contains the shuttle pixel, nearest first."""
     out = []
@@ -366,30 +400,24 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         # the opener must be answered quickly, else it was the server fiddling before serving
         while len(g) > 1 and t[g[1][0]] - t[g[0][0]] > serve_answer_s:
             g = g[1:]
-        prev = None
-        for i, opts in g:
-            team = max(opts, key=lambda k: opts[k][0])  # nearest wrist wins; see best_per_team
-            geo = {k: geo_fit(cam, p[i], v[1]) for k, v in opts.items()}
-            fits = [k for k, (ok, _) in geo.items() if ok]
-            if len(fits) == 1:  # only one side could physically have reached it
-                team = fits[0]
-            elif len(fits) == 2 and prev in fits:  # both could: sides alternate in a rally
-                team = "opp" if prev == "us" else "us"
-            # ...unless it's close: then the side whose turn it is (from behind, a shuttle over
-            # a near head also sits on the far player's raised wrist)
-            other = "opp" if team == "us" else "us"
-            if team == prev and other in opts and opts[team][0] - opts[other][0] < TURN_MARGIN:
-                team = other
-            who = opts[team][1]
+        def contact_of(i, who):
             # stance before the swing: at a jump smash the foot point projects metres too deep
             before = players_obs[(players_obs.player_id == who.player_id)
                                  & (players_obs.frame > i - TAKEOFF_S * fps) & (players_obs.frame <= i)]
             stance = before[["x_m", "y_m"]].median().to_numpy() if len(before) else (who.x_m, who.y_m)
-            contact = cam.near_vertical(p[i], stance)
-            if contact[2] < PICKUP_Z_M:  # scooped off the floor: tossing it back between points
-                continue
+            return cam.near_vertical(p[i], stance)
+        # sides for the whole exchange; a hit scooped off the floor (tossing the shuttle back) is
+        # dropped and the sides decided again without it, else it leaves a same-side pair behind
+        while g:
+            sides = assign_sides(g, p, cam, real)
+            low = [k for k, ((i, opts), tm) in enumerate(zip(g, sides)) if contact_of(i, opts[tm][1])[2] < PICKUP_Z_M]
+            if not low:
+                break
+            g = [x for k, x in enumerate(g) if k not in low]
+        for (i, opts), team in zip(g, sides if g else []):
+            who = opts[team][1]
+            contact = contact_of(i, who)
             contact[2] = np.clip(contact[2], *Z_RANGE)
-            prev = team
             hits.append(dict(frame=i, timestamp=t[i], player_id=who.player_id, team=who.team,
                              shuttle_x_px=p[i, 0], shuttle_y_px=p[i, 1], turn_deg=round(ang[i], 1),
                              contact_x_m=contact[0], contact_y_m=contact[1], contact_z_m=contact[2]))

@@ -268,8 +268,13 @@ def snap(frame, corners, max_shift=0.06):
 
 
 def _small(frame):
+    """Scale to WORK px on the long side, up as well as down: every pixel tolerance in here
+    (Hough lengths, line merging, scoring) is tuned at that size. A 480p clip used to be left
+    as is and auto-detection found nothing; upscaled it lands within 1 px of the 720p result."""
     s = WORK / max(frame.shape[:2])
-    return (cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else frame), min(s, 1.0)
+    if abs(s - 1) < 1e-3:
+        return frame, 1.0
+    return cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC), s
 
 
 def auto_detect(frame):
