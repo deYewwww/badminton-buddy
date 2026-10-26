@@ -101,6 +101,25 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     if shuttle is not None and "inpainted" in shuttle:
         real = (shuttle.visible & ~shuttle.inpainted & ~shuttle.interpolated).to_numpy()
     quiet = max(1, round(r["silence_s"] * fps))
+    # everyone standing still (>= 3 players tracked, all slower than still_mps) for still_s: play
+    # has stopped, whatever the shuttle tracker says (it follows a shuttle in a hand, bounced
+    # around, or on the next court). On ACE every such stretch was a serve being set up; without
+    # this, three rallies became one 30 s "rally" and two points vanished.
+    still = None
+    if players is not None and len(players) and "still_s" in r:
+        from hud.players import speeds
+        n = int(max(players.frame.max(), shots.frame.max())) + 1
+        v = speeds(players, np.arange(n) / fps)
+        tracked = np.isfinite(v).sum(0)
+        with np.errstate(invalid="ignore"):
+            still = (tracked >= 3) & (np.nanmax(np.where(np.isfinite(v), v, -1.0), 0) < r["still_mps"])
+    still_n = max(1, round(r.get("still_s", 1.0) * fps))
+
+    def still_between(a, b):
+        if still is None or b <= a:
+            return False
+        seg = still[a:b]
+        return pd.Series(seg).groupby((~seg).cumsum()).sum().max() >= still_n
     flight_gap = max(1, round(r["flight_gap_s"] * fps))
 
     def silent_between(a, b):
@@ -115,7 +134,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
         if s.timestamp < dead_until and not cut:
             continue
         if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind in ENDS
-                or silent_between(int(prev.frame), int(s.frame))):
+                or silent_between(int(prev.frame), int(s.frame)) or still_between(int(prev.frame), int(s.frame))):
             rid += 1
         keep.append(k)
         rally_ids.append(rid)
@@ -155,13 +174,18 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     for rid, g in shots.groupby("rally_id"):
         last = g.iloc[-1]
         kind = last.landing_kind
-        sd = float(getattr(last, "landing_sd", np.nan)) if kind == "predicted" else 0.0
-        ended = kind == "floor" or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
+        sd = float(getattr(last, "landing_sd", np.nan))
+        sd = sd if np.isfinite(sd) else 0.0
+        # seen on the floor: it landed (the rally is over) but in/out is called only when it lies
+        # clear of the lines; a predicted landing must also be clear of them to count at all
+        landed = kind == "floor"
+        ended = (landed and decisive(last.landing_x, last.landing_y, last.team, sd, r.get("floor_sure_sd", 1.5))) \
+            or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
         inside = ended and in_target(last.landing_x, last.landing_y, last.team)
         other = "opp" if last.team == "us" else "us"
         point = (last.team if inside else other) if ended else None
         lean = None  # not decided: which way the evidence leans (score.apply uses it as the guess)
-        if not ended and kind == "predicted" and np.isfinite(last.landing_x) and np.isfinite(sd):
+        if not ended and kind == "predicted" and np.isfinite(last.landing_x) and sd > 0:
             # the fitted flight came down in the hitter's own half (into the net) or clearly out:
             # the point goes the other way; in the opponents' half: the hitter's
             m = target_margin(last.landing_x, last.landing_y, last.team)
@@ -183,7 +207,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
             end_frame = min(end_frame, int(nxt_cut[0]) - 1)
         rows.append(dict(rally_id=rid, start_frame=int(g.frame.iat[0]), end_frame=end_frame,
                          start_ts=g.timestamp.iat[0], shot_count=len(g),
-                         last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=ended,
+                         last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=bool(landed or ended),
                          landing_x=last.landing_x if ended else np.nan, landing_y=last.landing_y if ended else np.nan,
                          landing_in=inside if ended else None, point_team=point, point_lean=lean,
                          winning_placement=last.placement if inside else None,

@@ -78,6 +78,15 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   landing too close to a line still sets point_lean (the guess); one well short of the net in
   the hitter's own half is a net error (NET_SURE_SD). The user's ACE complaints (net shot given
   to the hitter) were all guesses: the montage cuts most rally endings.
+- Winner guesses, from the user's corrections of their ACE run (data/user/ace_truth.json now has
+  winners for 10 of 12 stretches): the last detected hitter LOST 6 of 8 ([score] guess =
+  last_hitter_loses), except after a smash (guess_kill). A floor landing calls in/out only
+  floor_sure_sd clear of the lines (hits.FLOOR_PX through the homography: ~0.9 m near the net
+  from 0.7 m high; one 0.9 m call was wrong). ACE winners 3/8 -> 6/8, final score 5:5 = truth.
+  Tuned and checked on the same 8 rallies: re-check on the next clip before trusting it.
+- Rally split when everyone (>= 3 tracked) stands still >= [rally] still_s: in the user's run
+  three rallies (83-114 s) merged into one and two points vanished; every such stretch on ACE
+  was a serve being set up.
 - Manual points (editor "補一分", manual_points.csv: t, point_team): rallies.add_manual inserts
   one-frame pseudo rallies (rally_id 1000+, manual=True, point_source "manual"); score.apply
   orders by start_ts so detected rally ids, and the user's point_fixes keyed on them, stay put.

@@ -95,6 +95,31 @@ def test_net_error_and_leaning_guess():
     assert lean_out.point_team_final == "opp" and lean_out.point_source == "guess"
 
 
+def test_guess_last_hitter_loses_unless_a_kill():
+    from hud import config, score
+    r = pd.DataFrame(dict(rally_id=[1, 2, 3], start_ts=[1.0, 9.0, 20.0], point_team=[None, None, None],
+                          last_hitter=["P1", "P3", "P2"], last_shot_type=["clear", "drop", "smash"]))
+    out = score.apply(r, config.load())
+    assert out.point_team_final.tolist() == ["opp", "us", "us"] and set(out.point_source) == {"guess"}
+
+
+def test_floor_landing_near_a_line_is_not_called():
+    from hud import config
+    from hud.rallies import build
+    fps = 30
+    def ends_with(landing_y, sd):
+        shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
+                                   shot_type="drop", landing_x=3.0, landing_y=y, landing_kind=k, landing_sd=s_, end_frame=f + 20)
+                              for f, t, y, k, s_ in [(30, "us", 9.0, "intercept", np.nan), (50, "opp", 3.0, "intercept", np.nan),
+                                                     (70, "us", landing_y, "floor", sd)]])
+        players = pd.DataFrame(columns=["frame", "player_id", "team", "x_m", "y_m", "observed"]).astype({"observed": bool})
+        return build(shots, players, config.load())[1].iloc[0]
+    clear = ends_with(10.0, 0.5)   # 3.3 m past the net: in, the near team's point
+    assert clear.point_team == "us" and clear.ended_on_floor
+    close = ends_with(7.6, 0.86)   # 0.9 m past the net with ~0.9 m of doubt (ACE): not called
+    assert close.point_team is None and close.ended_on_floor
+
+
 def test_manual_point_fills_a_missed_rally():
     from hud import config, score
     from hud.rallies import add_manual

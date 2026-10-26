@@ -6,8 +6,9 @@ Who won each rally, first that applies:
   1. point_fixes CSV (rally_id,point_team with us/opp, or 'none' for a let): the human word
   2. rallies.point_team: the shuttle was seen landing and in/out was judged (an estimate:
      line calls carry the calibration error), or its fitted flight fell short of the net
-  3. a guess ("guess"): which way the last flight's predicted landing leans, else the side
-     that hit last. The HUD marks these as 推測 and the editor's table can fix them
+  3. a guess ("guess"): which way the last flight's predicted landing leans, else against the
+     side that hit last ([score] guess: on the user's ACE run the last hitter lost 6 of 8). The
+     HUD marks these as 推測 and the editor's table can fix them
   4. otherwise nobody: the score doesn't move and the rally is flagged for review
 The rally winner serves next. Start-of-video score comes from config [score], for videos
 that begin mid-match.
@@ -49,8 +50,11 @@ def apply(rallies, cfg, fixes=None):
             # the last flight's predicted landing, not certain enough to call: still the best guess
             team, src = r.point_lean, "guess"
         elif isinstance(getattr(r, "last_hitter", None), str):
-            # landing not seen: guess the side that hit last won it (fix it in the editor if not)
-            team, src = ("us" if r.last_hitter in ("P1", "P2") else "opp"), "guess"
+            # landing not seen: by default the side that hit last lost it ([score] guess; fix in the editor)
+            hitter = "us" if r.last_hitter in ("P1", "P2") else "opp"
+            wins = (s.get("guess", "last_hitter_loses") == "last_hitter_wins"
+                    or getattr(r, "last_shot_type", None) in s.get("guess_kill", []))
+            team, src = (hitter if wins else ("opp" if hitter == "us" else "us")), "guess"
         else:
             team, src = None, "unknown"
         won = None
