@@ -103,6 +103,28 @@ def test_serve_must_be_answered():
     assert out.frame.tolist() == [120, 160, 200] and rallies.start_frame.tolist() == [120]
 
 
+def test_pickup_toss_back_dropped():
+    """Rally 1: serve + fast kill, receiver sprints. Rally 2 (10 s later): two slow underarm
+    tosses while everyone walks. Rally 3: same slow shots but a player sprints (a real soft
+    exchange). Only rally 2 goes."""
+    fps = 30
+    rows = [(30, "us", 60), (45, "opp", 250),        # rally 1
+            (330, "us", 30), (360, "opp", 25),       # rally 2: toss-backs
+            (630, "us", 35), (660, "opp", 30)]       # rally 3: soft, but someone runs
+    shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
+                               shot_type="drive", landing_x=3.0, landing_y=3.0, landing_kind="intercept",
+                               end_frame=f + 20, speed_kmh_est=float(v)) for f, t, v in rows])
+    pl = []
+    for f in range(900):
+        sprint = 25 <= f < 75 or 625 <= f < 690   # 3 m/s
+        for k, pid in enumerate(["P1", "P2", "P3", "P4"]):
+            x = 1.0 + 2 * k % 4 + (3.0 * f / fps if (sprint and pid == "P3") else 1.0 * f / fps)  # walking 1 m/s
+            pl.append(dict(frame=f, player_id=pid, team="us" if k < 2 else "opp", x_m=x, y_m=3.0 + 6 * (k > 1), observed=True))
+    out, rallies = build(shots, pd.DataFrame(pl), config.load())
+    assert rallies.start_frame.tolist() == [30, 630], rallies.start_frame.tolist()
+    assert sorted(out.rally_id.unique()) == [1, 2]
+
+
 def test_score():
     cfg = config.load()
     # 20-20 deuce, then us wins 22-20; next game starts 0-0. Rally 3 unknown, rally 2 fixed by hand.

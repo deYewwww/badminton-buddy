@@ -184,6 +184,23 @@ def apply_swaps(df, path):
     return df
 
 
+def speeds(players, times, half=0.25):
+    """(players, frames) speed in m/s from the displacement over +-half s (foot-point jitter
+    averages out); NaN where a player isn't tracked. times: timestamp per frame."""
+    t = np.asarray(times, float)
+    n = len(t)
+    a = np.clip(np.searchsorted(t, t - half), 0, n - 1)
+    b = np.clip(np.searchsorted(t, t + half), 0, n - 1)
+    dt = np.maximum(t[b] - t[a], 1e-6)
+    out = []
+    for _, g in players.groupby("player_id"):
+        g = g[(g.frame >= 0) & (g.frame < n)]
+        pos = np.full((n, 2), np.nan)
+        pos[g.frame.to_numpy(int)] = g[["x_m", "y_m"]].to_numpy(float)
+        out.append(np.hypot(*(pos[b] - pos[a]).T) / dt)
+    return np.array(out).reshape(-1, n)
+
+
 def load_marks(path, times, H):
     """marks.json (editor: player feet clicked at a time) -> list of (frame, pid, court xy)."""
     if not path or not Path(path).exists():

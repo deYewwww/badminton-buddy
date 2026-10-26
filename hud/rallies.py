@@ -3,6 +3,12 @@
 Rally: consecutive hits until the shuttle settles on the floor, or play goes quiet (no real
 shuttle sighting for silence_s). Lone single-hit rallies are dropped as noise. Hits in the
 dead time after a landing (picking the shuttle up, tossing it back) are dropped.
+Pick-ups: a short "rally" (<= pickup_max_shots) in which no shot left the racket faster than
+pickup_max_kmh AND no player moved faster than pickup_max_mps is someone tossing the shuttle
+back, not play: dropped. Both signals must agree and both must be measured (players tracked,
+speeds known): a short real rally has a fast shot (a kill) or a player sprinting to it.
+Swing detection from the pose model was considered and not used: a swing lasts 0.1-0.15 s and
+the pose model runs 10 times a second, so it would often see no frame of it.
 Point: shuttle landed in the doubles court -> last hitter's team wins it, else the other team.
 In/out is ESTIMATED: the landing point carries the calibration error (~5-20 cm), so
 line calls are not reliable. Service-court rules are ignored.
@@ -140,9 +146,43 @@ def build(shots, players, cfg, shuttle=None):
                          winning_label=last.placement_label if inside else ""))
     rallies = pd.DataFrame(rows)
     if len(rallies):
+        toss = pickups(rallies, shots, players, r, fps)
+        if toss:
+            print(f"Dropped rallies {toss}: slow shots and nobody running (picking up / tossing back)")
+            shots = shots[~shots.rally_id.isin(toss)].copy()
+            rallies = rallies[~rallies.rally_id.isin(toss)].copy()
+            new = {old: k + 1 for k, old in enumerate(rallies.rally_id)}
+            shots["rally_id"], rallies["rally_id"] = shots.rally_id.map(new), rallies.rally_id.map(new)
+    if len(rallies):
         rallies["end_ts"] = rallies.start_ts + (rallies.end_frame - rallies.start_frame) / fps
         rallies["duration_s"] = (rallies.end_ts - rallies.start_ts).round(2)
     return shots, rallies
+
+
+def pickups(rallies, shots, players, r, fps):
+    """rally_ids that are someone tossing the shuttle back (see module docstring)."""
+    if "speed_kmh_est" not in shots or players is None or players.empty or "pickup_max_kmh" not in r:
+        return []
+    from hud.players import speeds
+    n = int(max(players.frame.max(), rallies.end_frame.max())) + 1
+    v = speeds(players, np.arange(n) / fps)
+    out = []
+    for ral in rallies.itertuples():
+        g = shots[shots.rally_id == ral.rally_id]
+        if len(g) > r["pickup_max_shots"]:
+            continue
+        sp = g.speed_kmh_est.astype(float)
+        if sp.isna().all():  # no shot speed measured: no evidence either way
+            continue
+        win = v[:, ral.start_frame:ral.end_frame + 1]
+        if win.size == 0 or (np.isfinite(win).sum(0) >= 2).mean() < 0.5:  # players mostly untracked
+            continue
+        fast_shot = sp.max() >= r["pickup_max_kmh"]
+        with np.errstate(invalid="ignore"):
+            running = np.nanmax(win) >= r["pickup_max_mps"]
+        if not fast_shot and not running:
+            out.append(int(ral.rally_id))
+    return out
 
 
 def _fps(shots):

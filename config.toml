@@ -13,6 +13,9 @@ silence_s = 1.0          # no real shuttle sighting this long = play has stopped
 flight_gap_s = 0.25      # rally ends where the last shot's track breaks off for this long
 max_flight_s = 1.5       # ... and no later than this after the last hit (a high clear's flight)
 min_shots = 2            # rallies with fewer hits are dropped as noise
+pickup_max_shots = 3     # a rally this short with no shot faster than pickup_max_kmh and no player
+pickup_max_kmh = 70      # faster than pickup_max_mps is a toss-back, not play (initial shot speed;
+pickup_max_mps = 1.8     # walking ~1.3 m/s, any real rally has someone sprinting)
 serve_answer_s = 1.25    # a rally's first hit must be answered this fast, else it was pre-serve fiddling
                          # (tuned on 3 rallies of one clip; raise it if long high serves get dropped)
 

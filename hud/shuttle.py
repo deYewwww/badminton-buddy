@@ -116,16 +116,8 @@ def idle_frames(players, times, cfg):
     idle = np.zeros(n, bool)
     if players is None or players.empty or n < 2:
         return idle
-    a = np.clip(np.searchsorted(t, t - 0.25), 0, n - 1)
-    b = np.clip(np.searchsorted(t, t + 0.25), 0, n - 1)
-    dt = np.maximum(t[b] - t[a], 1e-6)
-    speeds = []
-    for _, g in players.groupby("player_id"):
-        g = g[g.frame < n]
-        pos = np.full((n, 2), np.nan)
-        pos[g.frame.to_numpy()] = g[["x_m", "y_m"]].to_numpy()
-        speeds.append(np.hypot(*(pos[b] - pos[a]).T) / dt)
-    v = np.array(speeds)                            # (players, frames), NaN = not tracked
+    from hud.players import speeds
+    v = speeds(players, t)                          # (players, frames), NaN = not tracked
     tracked = np.isfinite(v).sum(0)
     with np.errstate(invalid="ignore"):
         fast = (v > cfg["idle_speed_mps"]).any(0)
