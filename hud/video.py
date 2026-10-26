@@ -46,19 +46,21 @@ def _hw():
     return "scale_vt" in out
 
 
-def frames(path, size, every=1, rgb=False, pre=None):
+def frames(path, size, every=1, rgb=False, pre=None, keys=False):
     """Yield every `every`-th frame resized to size=(w, h), BGR (or RGB) uint8.
-    pre: ffmpeg filters applied before the resize (crop/pad); software decode then."""
+    pre: ffmpeg filters applied before the resize (crop/pad); software decode then.
+    keys: decode key frames only (every-th of those): a fast spread-out sample."""
     w, h = size
     sel = f"select='not(mod(n\\,{every}))'," if every > 1 else ""
     pix = "rgb24" if rgb else "bgr24"
     variants = []
+    skip = ["-skip_frame", "nokey"] if keys else []
     if pre:
         sel += pre + ","
     elif _hw():
-        variants.append(["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", str(path),
+        variants.append([*skip, "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", str(path),
                          "-vf", f"{sel}scale_vt=w={w}:h={h},hwdownload,format=nv12"])
-    variants.append(["-i", str(path), "-vf", f"{sel}scale={w}:{h}:flags=area"])
+    variants.append([*skip, "-i", str(path), "-vf", f"{sel}scale={w}:{h}:flags=area"])
     n = w * h * 3
     for args in variants:
         proc = subprocess.Popen(["ffmpeg", "-v", "error", *args, "-fps_mode", "passthrough",
@@ -76,3 +78,12 @@ def frames(path, size, every=1, rgb=False, pre=None):
             proc.wait()
         if got:
             return  # else: hardware path produced nothing, try software
+
+
+def sample(path, size, n, rgb=False, pre=None):
+    """About n frames spread over the clip, key frames only: decoding every frame just to keep a
+    few (median backgrounds, the player region) was a whole extra pass over a 10-minute clip."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=flags",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    keys = max(1, out.count("K"))
+    return list(frames(path, size, every=max(1, keys // n), rgb=rgb, pre=pre, keys=True))[:n]

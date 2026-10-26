@@ -125,16 +125,23 @@ def test_stabilize_pan(tmp=None):
         ff.stdin.write(cv2.warpPerspective(base, A, (640, 360)).tobytes())
     ff.stdin.close(); ff.wait()
     corners = [[100, 300], [540, 300], [400, 150], [240, 150]]
-    c = stabilize.run(src, d / "stab.mp4", 0.0, corners)
-    meta = json.loads((d / "stab.json").read_text())
-    assert np.allclose(c, np.float64(corners) + meta["offset"])
-    cap = cv2.VideoCapture(str(d / "stab.mp4"))
-    frames = [cap.read()[1] for _ in range(30)]
-    ox, oy = meta["offset"]
-    ref = cv2.cvtColor(frames[0][oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32)
-    worst = max(np.hypot(*cv2.phaseCorrelate(ref, cv2.cvtColor(f[oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32))[0])
-                for f in frames[1:])
-    assert worst < 1.0, worst
+    default = stabilize.KEY_EVERY
+    # every frame matched: sub-pixel; key frames + interpolation: within the curve of this fast pan
+    for every, tol in ((1, 1.0), (default, 3.0)):
+        stabilize.KEY_EVERY = every
+        try:
+            c = stabilize.run(src, d / "stab.mp4", 0.0, corners)
+        finally:
+            stabilize.KEY_EVERY = default
+        meta = json.loads((d / "stab.json").read_text())
+        assert np.allclose(c, np.float64(corners) + meta["offset"])
+        cap = cv2.VideoCapture(str(d / "stab.mp4"))
+        frames = [cap.read()[1] for _ in range(30)]
+        ox, oy = meta["offset"]
+        ref = cv2.cvtColor(frames[0][oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        worst = max(np.hypot(*cv2.phaseCorrelate(ref, cv2.cvtColor(f[oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32))[0])
+                    for f in frames[1:])
+        assert worst < tol, (every, worst)
 
 
 def test_evaluate_matching():
