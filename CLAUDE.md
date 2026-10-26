@@ -1,6 +1,7 @@
 # badminton-buddy (羽球 HUD 編輯器)
 
-Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md first.
+Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md first, then
+docs/HANDOFF.md (where the last cloud session left off and what is next).
 
 - Run: `uv run hud web` (editor, port 7860) or `uv run hud run VIDEO`.
 - Tests: `for f in tests/test_*.py; do uv run python $f; done` (no videos needed).
@@ -48,7 +49,7 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 - ACE clip (user, 115 s, 0.7 m portrait, gimbal + cuts), stabilised, 5 rounds: rallies found
   33% -> 67-75%, precision 50% -> 80%, shuttle in play 38% -> 63%, hits/s 0.54 -> 1.04;
   same side twice in a row still 27% (all near-near): side assignment is weak at low height.
-  Winners/hits could not be hand-labelled from that footage.
+  Winners: the user's own corrections, in docs/ace_truth.json (data/ is not in git).
 - Panning/cut clips are stabilised automatically (pipeline.prepare -> stab.mp4 + calib_stab.json,
   marks_stab.json; pipeline.work() says which video/calib the stages use). calib.json records t,
   the frame the corners were set on (= the stabilisation reference). render maps the HUD back onto
