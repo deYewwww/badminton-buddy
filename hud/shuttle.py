@@ -6,6 +6,10 @@ We import its model definitions and checkpoints but not its predict.py: that scr
 every full-res frame 8 times and buffers heatmaps, which grew to 8 GB and swapped an 8 GB Mac
 on a 16 s clip. Here each frame is resized once and streamed in non-overlapping 8-frame
 windows, so memory stays flat for any video length.
+
+Dead time (players standing between points, picking up the shuttle) is skipped: TrackNet is
+~85% of the analysis compute and has nothing to find there. idle_frames() marks it from the
+player track, which the players stage has already written; see [shuttle] in config.toml.
 """
 from pathlib import Path
 
@@ -98,9 +102,49 @@ def _inpaint_mask(y, vis, th, max_len=None):
     return mask
 
 
+def idle_frames(players, times, cfg):
+    """-> bool per frame: True = dead time, TrackNet may skip it.
+
+    Idle = at least 3 players tracked and none moving faster than idle_speed_mps (displacement
+    over half a second, so foot-point jitter doesn't count). Walking is slower than rally
+    footwork, which bursts past 2 m/s within seconds. Fewer players tracked = unknown = not
+    idle. Each idle run is trimmed by pad_after_s at its start (the last shot may still be in
+    the air) and pad_before_s at its end (the serve comes before anyone moves); what is left
+    is skipped only if at least min_skip_s long."""
+    t = np.asarray(times, float)
+    n = len(t)
+    idle = np.zeros(n, bool)
+    if players is None or players.empty or n < 2:
+        return idle
+    a = np.clip(np.searchsorted(t, t - 0.25), 0, n - 1)
+    b = np.clip(np.searchsorted(t, t + 0.25), 0, n - 1)
+    dt = np.maximum(t[b] - t[a], 1e-6)
+    speeds = []
+    for _, g in players.groupby("player_id"):
+        g = g[g.frame < n]
+        pos = np.full((n, 2), np.nan)
+        pos[g.frame.to_numpy()] = g[["x_m", "y_m"]].to_numpy()
+        speeds.append(np.hypot(*(pos[b] - pos[a]).T) / dt)
+    v = np.array(speeds)                            # (players, frames), NaN = not tracked
+    tracked = np.isfinite(v).sum(0)
+    with np.errstate(invalid="ignore"):
+        fast = (v > cfg["idle_speed_mps"]).any(0)
+    still = (tracked >= 3) & ~fast
+    edges = np.flatnonzero(np.diff(np.r_[0, still.astype(int), 0]))
+    for i, j in zip(edges[::2], edges[1::2]):       # idle run = frames i..j-1
+        a_ = np.searchsorted(t, t[i] + cfg["pad_after_s"]) if i > 0 else i  # video start: nothing in flight
+        b_ = np.searchsorted(t, t[j - 1] - cfg["pad_before_s"], side="right") if j < n else j
+        if b_ > a_ and t[b_ - 1] - t[a_] >= cfg["min_skip_s"]:
+            idle[a_:b_] = True
+    return idle
+
+
 @torch.no_grad()
-def run_tracknet(video, batch=1):
-    """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip)."""
+def run_tracknet(video, batch=1, idle=None):
+    """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip),
+    except 8-frame windows that are wholly idle (bool per frame). Even those still run while
+    the previous window saw the shuttle in its last frames: a rally the gate misjudged as
+    idle keeps being tracked for as long as the shuttle is in sight."""
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     (tracknet, L), (inpaintnet, L2) = _load_models(device)
     dtype = torch.float16 if device == "mps" else torch.float32  # half precision: ~6% faster, same detections
@@ -113,7 +157,7 @@ def run_tracknet(video, batch=1):
     stride = 1
     median = np.moveaxis(_median(video, n), -1, 0)
     xy = []  # normalised (x, y) per frame, (0, 0) = not seen
-    windows, done = [], False
+    windows, done, read, skipped = [], False, 0, 0
     src = _frames(video)
     while not done:
         frames = []
@@ -125,6 +169,13 @@ def run_tracknet(video, batch=1):
             frames.append(np.moveaxis(f, -1, 0))
         if frames:
             real = len(frames)
+            read += real
+            in_sight = any(x or y for x, y in xy[-2:])  # shuttle in the previous window's last frames
+            if idle is not None and not windows and not in_sight and idle[read - real:read].all():
+                xy += [(0.0, 0.0)] * real
+                skipped += real
+                frames = []
+        if frames:
             frames += [frames[-1]] * (L - real)  # pad the last window
             windows.append((np.concatenate([median] + frames), real))
         if windows and (len(windows) == batch or done):
@@ -135,6 +186,8 @@ def run_tracknet(video, batch=1):
                     c = _locate(heat[k, t])
                     xy.append((c[0] / W, c[1] / H) if c else (0.0, 0.0))
             windows = []
+    if skipped:
+        print(f"TrackNet skipped {skipped}/{len(xy)} idle frames ({skipped / max(len(xy), 1):.0%})")
     xy = np.array(xy, np.float32).reshape(-1, 2)
     vis = (xy != 0).any(axis=1)
     # InpaintNet: rectify occluded stretches in non-overlapping windows of L2 frames
@@ -208,7 +261,8 @@ def clean(raw, times, height=1080, fps=50.0):
     return out
 
 
-def run(video, out):
+def run(video, out, players_path=None):
+    from hud import config
     from hud.video import frame_times
     times = frame_times(video)
     if not times:
@@ -216,7 +270,11 @@ def run(video, out):
     cap = open_video(video)
     height, fps = cap.get(cv2.CAP_PROP_FRAME_HEIGHT), cap.get(cv2.CAP_PROP_FPS) or 30
     cap.release()
-    df = clean(run_tracknet(video), times, height, fps)
+    cfg = config.load().get("shuttle", {})
+    idle = None
+    if cfg.get("skip_idle") and players_path and Path(players_path).exists():
+        idle = idle_frames(pd.read_parquet(players_path, columns=["frame", "player_id", "x_m", "y_m"]), times, cfg)
+    df = clean(run_tracknet(video, idle=idle), times, height, fps)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     det = int((df.visible & ~df.interpolated & ~df.inpainted).sum())

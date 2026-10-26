@@ -5,7 +5,7 @@ import pandas as pd
 from hud.camera import Camera
 from hud.court import CORNERS_M, homography
 from hud.hits import best_per_team, shot_type, turn_candidates
-from hud.shuttle import clean
+from hud.shuttle import clean, idle_frames
 
 
 def synthetic_camera(f=1500.0, C=(3.05, -7.0, 6.0)):
@@ -76,6 +76,25 @@ def test_shot_rules():
     assert shot_type((3, 5.0, 1.0), (3, 12.5), 120) == "clear"
     assert shot_type((3, 12, 2.5), (3, 8.5), 60) == "drop"
     assert shot_type((3, 9.5, 1.4), (3, 3.5), 140) == "drive"
+
+
+def test_idle_frames():
+    """30 fps, 4 players: rally 0-10 s (side steps at 2.4 m/s), standing 10-20 s, rally again
+    20-30 s. Only the middle of the standing stretch, minus the pads, is idle."""
+    fps, n = 30, 900
+    t = np.arange(n) / fps
+    cfg = dict(idle_speed_mps=1.8, pad_after_s=2.0, pad_before_s=2.0, min_skip_s=1.0)
+    play = (t < 10) | (t >= 20)
+    x = np.where(play, 3 + 0.8 * np.sin(3 * t), 3.0)  # peak speed 2.4 m/s
+    rows = [dict(frame=f, player_id=p, x_m=x[f] + k, y_m=2.0 + 6 * (k > 1)) for k, p in enumerate(["P1", "P2", "P3", "P4"])
+            for f in range(n)]
+    idle = idle_frames(pd.DataFrame(rows), t, cfg)
+    on = t[idle]
+    assert on.min() > 11.5 and on.max() < 19.0 and on.max() - on.min() > 5, (on.min(), on.max())
+    assert not idle[play].any()
+    # two players lost (dark corner): unknown, never idle
+    few = pd.DataFrame([r for r in rows if r["player_id"] in ("P1", "P3")])
+    assert not idle_frames(few, t, cfg).any()
 
 
 if __name__ == "__main__":
