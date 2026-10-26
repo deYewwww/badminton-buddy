@@ -33,12 +33,16 @@ FEAT_SIDE = 640       # ... and on an image no bigger than this (long side)
 MAX_SIDE = 1920       # frames are stabilised at most this big (long side): a 4K clip warped and re-encoded
                       # at full size took hours; nothing downstream needs more (YOLO 960, TrackNet 512)
 MIN_INLIERS = 40
+N_FEAT = 3000         # ORB features per frame (1500 moved warps by ~12 px median on the DT clip)
+KEY_EVERY = 4         # match every 4th frame, interpolate between (a phone pans smoothly); cuts,
+                      # lost frames and jerks are matched frame by frame. DT clip: frame-by-frame warps
+                      # jittered ~16 px (median 2nd difference), this ~0.1 px, and it is ~3x faster
 MAX_CANVAS = 1.6      # canvas at most this many times the frame, each way
 
 
 class Matcher:
     def __init__(self, ref):
-        self.orb = cv2.ORB_create(3000)
+        self.orb = cv2.ORB_create(N_FEAT)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING)
         # features on a FEAT_SIDE image whatever the clip's size: found on half of a 1920 frame,
         # RANSAC accepted wrong homographies before a cut (jumps every few frames); at the size
@@ -46,9 +50,10 @@ class Matcher:
         self.scale = min(SCALE, FEAT_SIDE / max(ref.shape[:2]))
         self.ref = self._feat(ref)
 
-    def _feat(self, img):
-        g = cv2.cvtColor(cv2.resize(img, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
-        return self.orb.detectAndCompute(g, None)
+    def _feat(self, img, small=False):
+        """small: img is already at feature size (decoded that small by ffmpeg)."""
+        g = img if small else cv2.resize(img, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
+        return self.orb.detectAndCompute(cv2.cvtColor(g, cv2.COLOR_BGR2GRAY), None)
 
     def homography(self, a, b):
         """features a -> features b: (3x3 at full size, inliers) or (None, n)."""
@@ -71,7 +76,23 @@ JUMP_CUT = 0.05       # ... or the view direction jumps this much of the frame w
 
 
 def _thumb(f):
-    return cv2.cvtColor(cv2.resize(f, (180, 320), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)[:200].astype(np.float32)
+    return cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (180, 320), interpolation=cv2.INTER_AREA)[:200].astype(np.float32)
+
+
+def sane(H, size, reach=0.6, area=(0.4, 2.5)):
+    """A frame -> reference warp that can be real for a phone turning about its centre: the frame
+    lands as a convex quad of about its own area, its centre within reach x the frame of the
+    reference. The user's clip turns away from the court (people on the bench): chaining frame
+    to frame there drifted to warps sending the frame off the canvas or folding it."""
+    if H is None or not np.isfinite(H).all():
+        return False
+    w, h = size
+    q = cv2.perspectiveTransform(np.float64([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2), H).reshape(-1, 2)
+    if not cv2.isContourConvex(np.float32(q)):
+        return False
+    a = cv2.contourArea(np.float32(q)) / (w * h)
+    cx, cy = q.mean(0)
+    return area[0] < a < area[1] and abs(cx / w - 0.5) < reach and abs(cy / h - 0.5) < reach
 
 
 def work_size(w, h, max_side=MAX_SIDE):
@@ -98,27 +119,87 @@ def homographies(video, ref_index, size=None, progress=None):
     if not ok:
         raise SystemExit(f"cannot read reference frame {ref_index} of {video}")
     m = Matcher(_scaled(ref, size))
-    out, prev, prev_H, cuts, prev_t = [], None, None, [], None
-    for i, f in enumerate(frames(video, size)):
+    # decoded straight at feature size (ffmpeg/VideoToolbox): resizing 1920 px frames in Python was
+    # 40 % of this pass; homographies found there are scaled back to `size` px
+    fs = (int(round(size[0] * m.scale)), int(round(size[1] * m.scale)))
+    U = np.diag([fs[0] / size[0], fs[1] / size[1], 1.0])
+    m.scale = 1.0
+    box = np.float32([[0, 0], [fs[0], 0], [fs[0], fs[1]], [0, fs[1]]])
+
+    def place(f, prev, prev_H):
+        """-> (features, H in feature px or None, inliers, how); chained through prev when the
+        reference doesn't match."""
+        feat = m._feat(f, small=True)
+        H, k = m.homography(feat, m.ref)
+        H = H if sane(H, fs) else None
+        how = "direct"
+        if H is None and prev is not None and prev_H is not None:
+            F, k = m.homography(feat, prev)
+            H = prev_H @ F if F is not None else None
+            H, how = (H, "chained") if sane(H, fs) else (None, "lost")
+        elif H is None:
+            how = "lost"
+        return feat, H, k, how
+
+    def corners(H):
+        return cv2.perspectiveTransform(box.reshape(-1, 1, 2), H).reshape(-1, 2)
+
+    res = []                 # per frame (H in feature px, inliers, how)
+    cuts, prev_t = [], None
+    key = (None, None)       # last placed frame's (features, H): what the next one chains through
+    pending = []             # (index, frame) since the last key frame
+    end = object()
+
+    def flush_one_by_one():
+        nonlocal key
+        for j, g in pending:
+            feat, H, k, how = place(g, *key)
+            res[j] = (H, k, how)
+            key = (feat, H)
+        pending.clear()
+
+    src = frames(video, fs)
+    i = -1
+    while True:
+        f = next(src, end)
+        if f is end:
+            flush_one_by_one()
+            break
+        i += 1
+        res.append(None)
         if progress and i % 100 == 0:
             progress(i / max(n, 1))
         th = _thumb(f)
+        cut = False
         if prev_t is not None:
             (_, _), corr = cv2.phaseCorrelate(prev_t, th)
-            if np.abs(th - prev_t).mean() > CUT_DIFF and corr < CUT_CORR:
-                cuts.append(i)
+            cut = np.abs(th - prev_t).mean() > CUT_DIFF and corr < CUT_CORR
         prev_t = th
-        feat = m._feat(f)
-        H, n = m.homography(feat, m.ref)
-        how = "direct"
-        if H is None and prev is not None and prev_H is not None:  # chain through the last frame
-            F, n = m.homography(feat, prev)
-            H, how = (prev_H @ F, "chained") if F is not None else (None, "lost")
-        elif H is None:
-            how = "lost"
-        out.append((H, n, how))
-        prev, prev_H = feat, H if H is not None else prev_H
-    return out, cuts
+        if cut:
+            cuts.append(i)
+            flush_one_by_one()
+        if i % KEY_EVERY and not cut:
+            pending.append((i, f))
+            continue
+        # key frame: matched; the frames since the last key are interpolated between the two when
+        # both were placed and the view moved smoothly, else matched one by one
+        kH = key[1]
+        feat, H, k, how = place(f, *key)
+        if pending and kH is not None and H is not None and \
+                np.abs(corners(H) - corners(kH)).max() < JUMP_CUT * fs[0] * (len(pending) + 1):
+            a, b = corners(kH), corners(H)
+            j0 = pending[0][0] - 1
+            for j, _ in pending:
+                u = (j - j0) / (i - j0)
+                res[j] = (cv2.getPerspectiveTransform(box, np.float32((1 - u) * a + u * b)).astype(np.float64), 0, "interpolated")
+            pending.clear()
+        else:
+            flush_one_by_one()
+            feat, H, k, how = place(f, *key)  # chained through the frame just before
+        res[i] = (H, k, how)
+        key = (feat, H)
+    Ui = np.linalg.inv(U)
+    return [(None if H is None else Ui @ H @ U, k, how) for H, k, how in res], cuts
 
 
 def jump_cuts(Hs, size, cuts):
@@ -128,7 +209,8 @@ def jump_cuts(Hs, size, cuts):
     c = np.float64([[w / 2, h / 2]]).reshape(-1, 1, 2)
     pos = np.array([cv2.perspectiveTransform(c, H).ravel() if H is not None else [np.nan, np.nan] for H, *_ in Hs])
     jump = np.r_[0, np.hypot(*np.diff(pos, axis=0).T)]
-    found = sorted(set(cuts) | set(np.flatnonzero(np.nan_to_num(jump) > JUMP_CUT * w).tolist()))
+    back = np.flatnonzero(np.isnan(pos[:-1, 0]) & np.isfinite(pos[1:, 0])) + 1  # view found again after being lost
+    found = sorted(set(cuts) | set(np.flatnonzero(np.nan_to_num(jump) > JUMP_CUT * w).tolist()) | set(back.tolist()))
     out = []
     for i in found:
         if not out or i - out[-1] > 3:
@@ -255,9 +337,19 @@ def run(video, out, ref_time, corners=None, progress=None, max_side=MAX_SIDE):
     Hs, cuts = homographies(video, ref_index, (w, h), lambda x: say(0.5 * x, "measure"))
     cuts = jump_cuts(Hs, (w, h), cuts)
     (ox, oy), (cw, ch) = canvas(Hs, (w, h))
+    r = max(cw, ch) / max_side
+    if r > 1:  # the canvas (frame + all the pan reached) at most max_side too: warping and encoding a
+        # 3074 px canvas was a third of this step, and YOLO / TrackNet shrink it to 960 / 512 anyway
+        k2, (w2, h2) = work_size(W0, H0, max(w, h) / r)
+        R = np.diag([w2 / w, h2 / h, 1.0])
+        Hs = [(None if H is None else R @ H @ np.linalg.inv(R), *x) for H, *x in Hs]
+        corners = None if corners is None else corners * [w2 / w, h2 / h]
+        k, w, h = k * w2 / w, w2, h2
+        S = np.diag([k, k, 1.0])
+        (ox, oy), (cw, ch) = canvas(Hs, (w, h))
     T = np.array([[1, 0, ox], [0, 1, oy], [0, 0, 1.0]])
     hows = [x[2] for x in Hs]
-    print(f"Stabilised {len(Hs)} frames: {hows.count('direct')} direct, {hows.count('chained')} chained, "
+    print(f"Stabilised {len(Hs)} frames: {hows.count('direct')} direct, {hows.count('chained')} chained, {hows.count('interpolated')} interpolated, "
           f"{hows.count('lost')} lost; {len(cuts)} cuts; canvas {cw}x{ch}, reference at +({ox},{oy})")
     K_of = np.repeat(np.eye(3)[None], len(Hs), 0)
     if corners is not None:  # floor-plane correction per segment (camera moved between takes)
@@ -276,10 +368,12 @@ def run(video, out, ref_time, corners=None, progress=None, max_side=MAX_SIDE):
            else ["-c:v", "libx264", "-crf", "17", "-preset", "veryfast"])
     ff = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{cw}x{ch}",
                            "-r", f"{fps:.4f}", "-i", "-", *enc, "-pix_fmt", "yuv420p", str(out)], stdin=subprocess.PIPE)
-    last = None
+    last, since = None, 0
+    hold = int(fps / 2)
     for i, (f, (H, _, _)) in enumerate(zip(frames(video, (w, h)), Hs)):
-        H = H if H is not None else last  # lost: hold the last good warp
+        since = 0 if H is not None else since + 1
         last = H if H is not None else last
+        H = last if since <= hold else None  # lost: hold the last good warp for a blur, black when the camera looks away
         img = cv2.warpPerspective(f, K_of[i] @ T @ H, (cw, ch)) if H is not None else np.zeros((ch, cw, 3), np.uint8)
         ff.stdin.write(img.tobytes())
         if i % 100 == 0:

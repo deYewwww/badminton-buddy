@@ -274,7 +274,8 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     far = far_region(H, size)
     detect.far_box = None if far is None else (int(far[0] / kx), int(far[1] / ky), int(far[2] / kx), int(far[3] / ky))
     from hud.detect import player_region
-    sample = [f for i, f in enumerate(frames(video, (sw, sh), every=max(1, total // 12))) if i < 12]
+    from hud.video import sample as key_sample
+    sample = key_sample(video, (sw, sh), 12)
     on_court = lambda q: -SIDE_MARGIN_M < q[0] < COURT_W + SIDE_MARGIN_M and -END_MARGIN_M < q[1] < COURT_L + END_MARGIN_M
     main = player_region(detect, sample, H, size, on_court, court_px=to_court(np.linalg.inv(H), CORNERS_M))
     detect.main_box = None if main is None else (int(main[0] / kx), int(main[1] / ky), int(main[2] / kx), int(main[3] / ky))

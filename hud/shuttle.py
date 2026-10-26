@@ -25,6 +25,7 @@ CKPT_DIR = ROOT / "models" / "tracknetv3"
 W, H = 512, 288           # TrackNet input size
 COOR_TH = 50 / np.hypot(W, H)  # InpaintNet output below this (normalised) = no shuttle, as upstream
 MEDIAN_SAMPLES = 60
+AIR_M = 4.0           # window(): keep the air this high over the net / far court in view
 MAX_GAP_S = 0.1   # interpolate invisible runs up to this long, if detected on both sides
 MAX_INPAINT_S = 0.4  # InpaintNet only bridges gaps this short (shuttle behind a body). Unbounded,
                      # it drew whole fake rallies through 5 s idle gaps on the oblique test clip
@@ -78,14 +79,21 @@ def window(fw, fh, cam=None, margin_m=1.5, native=None):
         return None
     h = int(min(fh, round(max(native or (fw, fh)) * 9 / 16)))
     w = int(round(h * 16 / 9))
-    bottom = fh
+    bottom, top = fh, fh
     if cam is not None:
-        from hud.court import COURT_L, COURT_W
+        from hud.court import COURT_L, COURT_W, NET_Y
+        front = lambda X: (cam.R @ (np.array(X) - cam.C))[2] > 0.1
         floor = [cam.project((x, y, 0.0)) for x in (-margin_m, COURT_W + margin_m) for y in (-margin_m, COURT_L + margin_m)
-                 if (cam.R @ (np.array([x, y, 0.0]) - cam.C))[2] > 0.1]
+                 if front((x, y, 0.0))]
         if floor:
             bottom = min(fh, max(p[1] for p in floor) + 0.03 * fh)
-    y0 = int(np.clip(bottom - h, 0, fh - h))
+        # the air the far side plays in (up to AIR_M over the net and far court) must stay inside:
+        # anchored on the floor, the DT clip's window (landscape, phone 1.35 m high) started below
+        # the far baseline and TrackNet never saw a far player's shot (hits 196 near : 16 far)
+        air = [cam.project((x, y, AIR_M)) for x in (0.0, COURT_W) for y in (NET_Y, COURT_L) if front((x, y, AIR_M))]
+        if air:
+            top = max(0.0, min(p[1] for p in air))
+    y0 = int(np.clip(min(bottom - h, top), 0, fh - h))
     x0 = int(round((fw - w) / 2)) if w > fw else 0
     return x0, y0, w, h
 
@@ -136,7 +144,8 @@ def _frames(video, every=None, win=None, fw=None):
 
 
 def _median(video, n, win=None, fw=None):
-    frames = list(_frames(video, every=max(1, n // MEDIAN_SAMPLES), win=win, fw=fw))
+    from hud.video import sample
+    frames = sample(video, (W, H), MEDIAN_SAMPLES, rgb=True, pre=_crop(win, fw))
     if not frames:
         raise SystemExit(f"No frames could be read from {video}")
     return np.median(frames, axis=0).astype(np.uint8)

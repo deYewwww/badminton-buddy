@@ -114,3 +114,18 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   faint one (0.10). Not validated end-to-end yet: needs the trained weights.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.
+- Speed + DT clip (2026-10-27, local Mac): the user's 10-min 2940x1912 45 fps screen recording never
+  finished. Measured on a 60 s excerpt then the whole clip: VideoToolbox decodes that 3K clip at only
+  ~100-120 fps (wall-bound, low CPU), so every full pass over the source costs ~4.5 min. Fixes:
+  stabilisation decodes at feature size (640) instead of resizing 1920 frames in Python; matches
+  every KEY_EVERY=4th frame and interpolates (frame-by-frame warps jittered ~16 px there); warps that
+  can't be a phone turning (stabilize.sane) are "lost" instead of chained (the camera turned to the
+  bench: chaining drifted into garbage, 88 false cuts in 60 s, 0 rallies); lost > 0.5 s -> black
+  frame; the canvas is capped at MAX_SIDE too (was 3074 px). Median / player-region samples come from
+  key frames (video.sample) instead of decoding the whole clip. Full clip: ~45 min (est.) -> 23 min.
+  ACE (KEY_EVERY 1 vs 4): rallies found 10 vs 9 of 12, winners 5/9 vs 4/8, same side 21% vs 14%.
+- TrackNet window (shuttle.window) is also kept high enough to hold the air AIR_M over the net/far
+  court: on DT (landscape, camera 1.35 m) the floor-anchored window started below the far baseline:
+  shuttle 48% -> 80% of frames, hits 212 (196 near : 16 far) -> 639 (390 : 249), rallies 10 -> 45.
+  ACE's window is unchanged. Winners on DT still unverified (no truth yet).
+
