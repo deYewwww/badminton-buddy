@@ -395,6 +395,12 @@ $("#mode").onclick = () => {
   setMode(!cornerMode);
   if (cornerMode && !CORN.every(cornerShown)) msg("有角離畫面太遠（或在鏡頭後面），先用畫面內的交叉點。", "err");
 };
+function calibOk(j) {  // the server's check of a saved calibration against the painted lines
+  if (j.on_line >= 0.5 && j.plausible) return true;
+  msg(`校正可能錯了：黃線只有 ${(j.on_line * 100).toFixed(0)}% 落在白線上` + (j.plausible ? "" : "，而且推算出的相機位置不合理")
+      + "。請把 1–4 號點對準球場四個角（角在畫面外就拖到灰色區域），再按「貼齊白線」。", "err");
+  return false;
+}
 $("#reset").onclick = () => { setCorners(defaultCorners()); msg("已重設。把 1–4 號點拖到對應的白線交叉點。"); };
 $("#snap").onclick = async () => {
   if (!G) return;
@@ -403,7 +409,7 @@ $("#snap").onclick = async () => {
   catch (e) { msg(e.message, "err"); }
 };
 $("#save").onclick = async () => {
-  try { await api("/api/calib/save", {id:M.id, corners:corners()}); msg("已儲存校正。", "ok"); }
+  try { const j = await api("/api/calib/save", {id:M.id, corners:corners()}); calibOk(j) && msg(`已儲存校正（白線吻合 ${(j.on_line * 100).toFixed(0)}%）。`, "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 
@@ -421,7 +427,10 @@ function names(n) {
 // ---- run & results
 async function run(start) {
   try {
-    if (start === "players") await api("/api/calib/save", {id:M.id, corners:corners()});
+    if (start === "players") {
+      const j = await api("/api/calib/save", {id:M.id, corners:corners()});
+      if (!calibOk(j) && !confirm("球場校正看起來不對（見校正區的紅字）。校正錯的話，對手、拍數、比分都會是空的。\n仍要開始分析嗎？")) return;
+    }
     await api("/api/run", {id:M.id, start});
   } catch (e) { return $("#runMsg").textContent = e.message; }
   $("#run").disabled = $("#rerender").disabled = true;
