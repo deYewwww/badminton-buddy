@@ -140,7 +140,18 @@ def idle_frames(players, times, cfg):
 
 
 @torch.no_grad()
-def run_tracknet(video, batch=1, idle=None):
+def outside_airspace(xy, size, box):
+    """xy: (N,2) normalised TrackNet positions ((0, 0) = not seen); size: frame (w, h);
+    box: image polygon of the air above the court (hits.court_airspace). -> bool (N,): seen
+    but outside the box (side stands, ceiling lights, a neighbouring court's shuttle). Anything
+    straight behind the court projects inside the box and is not caught here."""
+    seen = (xy != 0).any(axis=1)
+    px = xy * np.asarray(size, float)
+    inside = np.array([cv2.pointPolygonTest(box, (float(x), float(y)), False) >= 0 for x, y in px])
+    return seen & ~inside
+
+
+def run_tracknet(video, batch=1, idle=None, box=None):
     """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip),
     except 8-frame windows that are wholly idle (bool per frame). Even those still run while
     the previous window saw the shuttle in its last frames: a rally the gate misjudged as
@@ -189,6 +200,11 @@ def run_tracknet(video, batch=1, idle=None):
     if skipped:
         print(f"TrackNet skipped {skipped}/{len(xy)} idle frames ({skipped / max(len(xy), 1):.0%})")
     xy = np.array(xy, np.float32).reshape(-1, 2)
+    if box is not None:  # before InpaintNet, so it neither bridges to nor from a stray sighting
+        out = outside_airspace(xy, (fw, fh), box)
+        xy[out] = 0
+        if out.any():
+            print(f"Dropped {int(out.sum())} sightings outside the air above the court")
     vis = (xy != 0).any(axis=1)
     # InpaintNet: rectify occluded stretches in non-overlapping windows of L2 frames
     mask = _inpaint_mask(xy[:, 1], vis, 0.05, max(1, round(MAX_INPAINT_S * fps / stride)))
@@ -261,7 +277,7 @@ def clean(raw, times, height=1080, fps=50.0):
     return out
 
 
-def run(video, out, players_path=None):
+def run(video, out, players_path=None, calib_path=None):
     from hud import config
     from hud.video import frame_times
     times = frame_times(video)
@@ -274,7 +290,17 @@ def run(video, out, players_path=None):
     idle = None
     if cfg.get("skip_idle") and players_path and Path(players_path).exists():
         idle = idle_frames(pd.read_parquet(players_path, columns=["frame", "player_id", "x_m", "y_m"]), times, cfg)
-    df = clean(run_tracknet(video, idle=idle), times, height, fps)
+    box = None
+    if calib_path and Path(calib_path).exists():
+        from hud.camera import Camera
+        from hud.court import load
+        from hud.hits import court_airspace
+        H, calib = load(calib_path)
+        try:
+            box = court_airspace(Camera(H, calib["frame_size"]))
+        except ValueError:  # calibration without a valid focal length: keep everything
+            pass
+    df = clean(run_tracknet(video, idle=idle, box=box), times, height, fps)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     det = int((df.visible & ~df.interpolated & ~df.inpainted).sum())

@@ -76,7 +76,7 @@ def analyse(video, out_dir, progress=print, start="players"):
         lap("players")
     if "shuttle" in todo:
         progress(0.45, "追蹤羽球…")
-        shuttle.run(video, p["shuttle"], players_path=p["players"])
+        shuttle.run(video, p["shuttle"], players_path=p["players"], calib_path=p["calib"])
         lap("shuttle")
     if "hits" in todo:
         progress(0.7, "判斷擊球…")
