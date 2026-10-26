@@ -105,6 +105,52 @@ def test_venue_align_after_camera_moves():
     assert venue.align(img, corners, other)[0] is None
 
 
+def test_stabilize_pan(tmp=None):
+    """A 'gimbal' pan: frames are the reference view turned by known homographies. After
+    stabilising, every frame lines up with the reference (sub-pixel), and the court corners
+    come back shifted onto the canvas."""
+    import json, tempfile, subprocess
+    from pathlib import Path
+    from hud import stabilize
+    rng = np.random.default_rng(1)
+    base = cv2.resize(rng.integers(30, 220, (36, 64, 3), dtype=np.uint8), (640, 360), interpolation=cv2.INTER_NEAREST)
+    base = cv2.GaussianBlur(base, (3, 3), 0)
+    d = Path(tempfile.mkdtemp())
+    src = d / "pan.mp4"
+    ff = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", "640x360", "-r", "30",
+                           "-i", "-", "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(src)], stdin=subprocess.PIPE)
+    for k in range(30):
+        dx = 25 * np.sin(k / 6)  # pan left and right
+        A = np.array([[1, 0, dx], [0, 1, 0.3 * dx], [0, 0, 1.0]])
+        ff.stdin.write(cv2.warpPerspective(base, A, (640, 360)).tobytes())
+    ff.stdin.close(); ff.wait()
+    corners = [[100, 300], [540, 300], [400, 150], [240, 150]]
+    c = stabilize.run(src, d / "stab.mp4", 0.0, corners)
+    meta = json.loads((d / "stab.json").read_text())
+    assert np.allclose(c, np.float64(corners) + meta["offset"])
+    cap = cv2.VideoCapture(str(d / "stab.mp4"))
+    frames = [cap.read()[1] for _ in range(30)]
+    ox, oy = meta["offset"]
+    ref = cv2.cvtColor(frames[0][oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32)
+    worst = max(np.hypot(*cv2.phaseCorrelate(ref, cv2.cvtColor(f[oy + 60:oy + 300, ox + 60:ox + 580], cv2.COLOR_BGR2GRAY).astype(np.float32))[0])
+                for f in frames[1:])
+    assert worst < 1.0, worst
+
+
+def test_evaluate_matching():
+    """Rallies matched by overlap, hits by time; winners and side counted on matches only."""
+    from hud import evaluate as E
+    pred = pd.DataFrame(dict(start_ts=[1.0, 10.0, 30.0], end_ts=[5.0, 14.0, 31.0], shot_count=[6, 3, 2],
+                             point_team_final=["us", "opp", "us"]))
+    truth = [dict(start=0.8, end=5.5, winner="us", shots=7), dict(start=9.5, end=15, winner="us", shots=4),
+             dict(start=20, end=24, winner="opp", shots=None)]
+    r = E.rallies(pred, truth)
+    assert (r["found"], r["extra"], r["winner_right"], r["winner_judged"], r["shots_truth"], r["shots_found"]) == (2, 1, 1, 2, 11, 9)
+    ph = pd.DataFrame(dict(timestamp=[1.0, 1.9, 3.05, 7.0], team=["us", "opp", "opp", "us"]))
+    h = E.hits(ph, [dict(t=1.1, team="us"), dict(t=2.0, team="us"), dict(t=3.0, team="opp"), dict(t=4.0, team="us")], [[0, 5]])
+    assert (h["right_side"], h["wrong_side"], h["missed"], h["extra"]) == (2, 1, 1, 0)  # the 7.0 s hit is outside the window
+
+
 def test_placement():
     assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
     assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court

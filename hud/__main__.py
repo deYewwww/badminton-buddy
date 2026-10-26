@@ -16,6 +16,13 @@ def main():
     r.add_argument("--venue", help="用存好的場地校正（先用 hud venue-save 存）")
     r.add_argument("--from", dest="start", default="players", choices=["players", "shuttle", "hits", "rallies", "hud"],
                    help="從哪一步開始重跑")
+    ev = sub.add_parser("eval", help="和人工標記比對：回合、擊球、比分的準確度")
+    ev.add_argument("out", help="分析資料夾")
+    ev.add_argument("truth", help="標記檔 truth.json（格式見 hud/evaluate.py）")
+    st = sub.add_parser("stabilize", help="把鏡頭有轉動（雲台追蹤）的影片對齊成固定鏡頭")
+    st.add_argument("video")
+    st.add_argument("--ref", type=float, required=True, help="參考畫面的秒數（在這一幀上校正）")
+    st.add_argument("--out", required=True, help="輸出影片，例如 data/穩定.mp4")
     vs = sub.add_parser("venue-save", help="把一個分析資料夾的校正存成場地（建議用空場影片）")
     vs.add_argument("name")
     vs.add_argument("--from", dest="src", required=True, help="分析資料夾，例如 out/空場")
@@ -23,6 +30,15 @@ def main():
     c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
     c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
+    if a.cmd == "eval":
+        from hud import evaluate
+        print(evaluate.text(evaluate.run(a.out, a.truth)))
+        return
+    if a.cmd == "stabilize":
+        from hud import stabilize
+        stabilize.run(a.video, a.out, a.ref)
+        print(f"完成：{a.out}（在 hud web 裡打開它，於 {a.ref} 秒校正）")
+        return
     if a.cmd == "venue-save":
         from hud import court, pipeline, venue
         _, calib = court.load(pipeline.paths(a.src)["calib"])
