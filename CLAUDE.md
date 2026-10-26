@@ -74,6 +74,10 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   averaged +-3 frames within a cut, tags stacked by depth + eased + held 1 s when the box drops,
   MOVE/ARRIVED with hysteresis (move_states). Shuttle drawn only on runs of >= 5 real sightings
   (shown_track): the user saw the trail "floating" on InpaintNet guesses and stray detections.
+  Then still floating at 1:29/1:38 (between points: the shuttle carried / tossed) -> drawn only in
+  play and never while hanging still (in_play_only); LOCK ON only on the shuttle as seen now (it
+  stayed pinned to the hit pixel while the camera panned). With the user's own calib reproduced
+  (out/user_cal), every drawn point checked at 1:45 sat on the real shuttle.
 - Score guesses (point_source "guess") are marked 推測 in the HUD and the editor table. A predicted
   landing too close to a line still sets point_lean (the guess); one well short of the net in
   the hitter's own half is a net error (NET_SURE_SD). The user's ACE complaints (net shot given

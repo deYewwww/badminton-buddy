@@ -491,7 +491,9 @@ class Hud:
         shot, _, _ = self.current_shot(f)
         if shot is None or not pd.notna(shot.speed_kmh_est) or (f - shot.frame) / self.fps > LOCK_S:
             return
-        p = S["shuttle"][f] if np.isfinite(S["shuttle"][f, 0]) else S["shuttle"][int(shot.frame)]
+        # on the shuttle as it is now, or not at all: pinned to where it was hit, the reticle hung
+        # in the air while the camera panned (the user saw it as the tracker floating)
+        p = S["shuttle"][f]
         if not np.isfinite(p[0]):
             return
         col = (255, 230, 120)
