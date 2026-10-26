@@ -62,12 +62,14 @@ GEO_Z = (-0.2, 3.6)   # ... at this height: below the floor or above a jump smas
 TAKEOFF_S = 0.4       # hitter position = median observed stance over this long before the hit
 WRIST_WIN_S = 0.07     # nearest wrist to the shuttle within this long of the hit
 GEO_COST = 3.0        # assign_sides: that side's player can't reach the shuttle (geo_fit fails)
-MISS_W = 0.5          # ... per metre the ray passes from their vertical
-WRIST_W = 1.0         # ... times (1 - nearest-wrist score)
+MISS_W = 1.5          # ... per metre the ray passes from their vertical
+WRIST_W = 2.5         # ... times (1 - nearest-wrist score). Weights: grid search on one real rally in
+                      # 3 versions (original, 480p noisy, mirrored+cropped), 63 hits: wrong side 8 -> 1
 SAME_COST = 2.0       # the same side hits twice in a row (only possible if a hit was missed)
 SAME_LOST_COST = 0.8  # ... where the shuttle went unseen for >= 3 frames between the two
 SUPPORT_S, SUPPORT_MIN = 0.17, 0.3  # around a hit, >= 30% of frames must be real detections
 MAX_KMH = 450
+MISSED_HIT_S = 2.0    # same side hits again within this: not a landing, a hit was missed
 MAX_GAP_GONE_S = 0.3  # sighting gap longer than this after a rally's last hit = shuttle left play
 Z_RANGE = (0.2, 3.5)  # plausible contact heights, m
 PICKUP_Z_M = 0.25     # lower than this is a shuttle picked up off the floor, not a stroke
@@ -438,9 +440,13 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
                 last_seen = q if seen[q] else last_seen
                 q += 1
             land, kind, end = (np.nan, np.nan), "unknown", last_seen
-            if last_seen is not None:
-                # where it settled, not where it was last seen: it may roll or get picked up
-                settled = landed_at(p, i + 1, last_seen)
+            # the same side hits again soon: a hit in between was missed, the shuttle never
+            # landed (calling it a landing ended the rally and threw away the hits after it)
+            soon = nxt is not None and nxt["timestamp"] - h["timestamp"] < MISSED_HIT_S
+            if last_seen is not None and not soon:
+                # where it settled, not where it was last seen: it may roll or get picked up.
+                # Still for 0.3 s: the top of a high clear seen from behind hangs for ~5 frames
+                settled = landed_at(p, i + 1, last_seen, still_n=max(5, round(0.3 * fps)))
                 g = to_court(H, [p[settled]])[0]
                 if -3 < g[0] < COURT_W + 3 and -3 < g[1] < COURT_L + 3:  # else it left the frame in the air
                     land, kind, end = tuple(g), "floor", settled
