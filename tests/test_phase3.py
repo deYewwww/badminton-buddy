@@ -111,6 +111,65 @@ def test_far_pass_fills_main_gaps_only():
     assert w is not None and w[2] < 1280 / 1.6 and w[0] >= 0 and w[1] + w[3] <= 1280
 
 
+def test_detector_fills_gaps_on_the_path_only():
+    from hud.shuttle_yolo import fill, gaps
+    assert gaps(np.array([1, 0, 0, 1, 1, 0, 1], bool), 2) == [(0, 3), (4, 6)]
+    n = 12
+    X = np.linspace(100, 650, n)
+    raw = pd.DataFrame(dict(Frame=range(n), Visibility=[1] * 3 + [0] * 6 + [1] * 3, X=np.where(np.arange(n) < 3, X, 0),
+                            Y=200.0, inpainted=False))
+    raw.loc[9:, "X"] = X[9:]
+    imgs = lambda fs: ((f, np.zeros((720, 1280, 3), np.uint8)) for f in fs)
+    # tile-relative detections: on the path at frames 4 and 6 (strong, weak); off the path at 5
+    hits = {4: (X[4], 200, 0.5), 5: (X[5], 500, 0.9), 6: (X[6] + 5, 202, 0.2)}
+    def det(tiles, frames=iter(range(3, 9))):
+        out = []
+        for _ in tiles:
+            f = next(frames)
+            if f in hits:
+                x, y, c = hits[f]
+                x0 = int(np.clip(X[f] - 320, 0, 1280 - 640)); y0 = 0
+                out.append(np.array([[x - x0, y - y0, c]]))
+            else:
+                out.append(np.zeros((0, 3)))
+        return out
+    out, k = fill(None, raw, 30, 1080, detector=det, read=imgs)
+    assert k == 2 and out.Visibility.iloc[4] == 1 and out.Visibility.iloc[6] == 1 and out.Visibility.iloc[5] == 0
+    assert abs(out.X.iloc[4] - X[4]) < 1 and not out.inpainted.any()
+
+
+def test_gap_path_follows_the_arc():
+    from hud.shuttle_yolo import gap_path
+    f = np.arange(20)
+    P = np.c_[20.0 * f, 300 - 40 * f + 2.5 * f ** 2]   # a clear's apex seen from behind
+    seen = np.ones(20, bool); seen[8:13] = False
+    path = gap_path(np.flatnonzero(seen), P, 7, 13)
+    assert np.hypot(*(path(10) - P[10])) < 1, path(10)  # a straight line would be off by ~22 px
+
+
+def test_detector_finds_the_shuttle_lying_after_the_track_ends():
+    from hud.shuttle_yolo import fill
+    n = 60
+    raw = pd.DataFrame(dict(Frame=range(n), Visibility=[1] * 10 + [0] * 50, X=np.r_[np.full(10, 400.0), np.zeros(50)],
+                            Y=np.r_[np.linspace(300, 480, 10), np.zeros(50)], inpainted=False))
+    imgs = lambda fs: ((f, np.zeros((720, 1280, 3), np.uint8)) for f in fs)
+    lying = np.array([410.0, 520.0])
+    def det(tiles, frames=[]):
+        return [np.array([[*(lying - [80, 80]), 0.6]]) for _ in tiles]  # tile origin (80, 80)
+    out, k = fill(None, raw, 30, 1080, detector=det, read=imgs)
+    seen = out[out.Visibility == 1]
+    assert k > 10 and np.allclose(out.loc[13, ["X", "Y"]].astype(float), lying)
+    assert out.inpainted.iloc[10:12].all() and not out.inpainted.iloc[12:54].any()  # fall guessed, spot seen
+    assert (out.Visibility.iloc[10:55] == 1).all() and (out.Visibility.iloc[55:] == 0).all()
+    # the same spot already occupied before the shot (a spare shuttle): not a landing
+    raw2 = pd.concat([raw.iloc[:0], pd.DataFrame(dict(Frame=range(70), Visibility=0, X=0.0, Y=0.0, inpainted=False))])
+    raw2 = raw2.reset_index(drop=True)
+    raw2.loc[60:69, "Visibility"], raw2.loc[60:69, "X"], raw2.loc[60:69, "Y"] = 1, 400.0, np.linspace(300, 480, 10)
+    raw2 = pd.concat([raw2, pd.DataFrame(dict(Frame=range(70, 130), Visibility=0, X=0.0, Y=0.0, inpainted=False))], ignore_index=True)
+    out2, k2 = fill(None, raw2, 30, 1080, detector=det, read=imgs)
+    assert (out2.Visibility.iloc[70:] == 0).all(), k2
+
+
 def test_work_files_default_to_original(tmp=None):
     import tempfile
     from pathlib import Path

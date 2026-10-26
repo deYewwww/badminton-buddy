@@ -111,6 +111,23 @@ uv run --with numpy==2.3.5 hud export-coreml
 - **純移動偵測找球（不用 TrackNet）**：快很多，但 10 個擊球只找到 2 個。
 - **TrackNet 隔一幀跑**：3 個回合漏掉 2 個。
 
+## 羽球偵測器（選用，在 Mac 上訓練一次）
+
+TrackNet 是靠「球在動」找球：很小、很糊的球它找得到，但有些清楚可見的球（在看板前、網子旁）它會漏掉，而且球**落地靜止後**它就看不到了，偏偏落點決定比分。再加一個用單張圖片訓練的偵測器，補這兩種情況：
+
+```bash
+export ROBOFLOW_API_KEY=你的金鑰            # roboflow.com → Settings → API Keys（免費帳號就可以）
+uv run --with roboflow python scripts/train_shuttle.py --quick   # 先試跑：3 個 epoch，約 1 小時內
+uv run --with roboflow python scripts/train_shuttle.py           # 正式：15 個 epoch，大約一個晚上
+```
+
+腳本會下載 Roboflow Universe 上的公開羽球資料集（約 3–4 GB，CC BY 4.0），合併成單一類別，用 M2 訓練 YOLO11n，完成後寫出 `models/shuttle_yolo.pt`。之後每次分析都會自動使用：
+
+- **補空缺**：TrackNet 兩次看到球之間最多 1 秒的空缺，只在球的軌跡附近搜尋，信心夠高、又落在軌跡上才採用。
+- **找落地的球**：每段軌跡結束後 1.5 秒內，在最後位置附近找靜止的球；至少兩個取樣幀都在同一個位置才算。如果那個位置在這一拍之前就已經有球躺著（場邊的備用球），就不採用。
+
+沒有這個檔案時，流程和以前完全一樣；也可以在 `config.toml` 設 `yolo_fill = false` 關掉。
+
 ## 準確度
 
 斜角測試片段（3 個回合、10 個人工標記的擊球），全自動、包含自動校正：

@@ -404,6 +404,11 @@ def run(video, out, players_path=None, calib_path=None):
         print(f"TrackNet far-court pass {far}")
         raw, n = merge_far(raw, run_tracknet(video, idle=idle, box=box, win=far))
         print(f"Far-court pass added {n} sightings")
+    from hud import shuttle_yolo
+    if cfg.get("yolo_fill", True) and shuttle_yolo.available():
+        inside = (lambda q: cv2.pointPolygonTest(box, (float(q[0]), float(q[1])), False) >= 0) if box is not None else None
+        raw, n = shuttle_yolo.fill(video, raw, fps, min(lens), inside=inside)
+        print(f"Shuttle detector filled {n} frames of TrackNet's gaps")
     df = clean(raw, times, min(lens), fps)  # px scale: short side
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
