@@ -69,8 +69,10 @@ uv run hud check out/<影片>
 Mac 上第一次用之前，建議先跑一次（約 1 分鐘）：把 TrackNet 轉成 CoreML，用 Neural Engine 跑羽球追蹤。程式會在每支影片開頭自動和原版比對，不一致就自動改回原版，結果不會變。
 
 ```bash
-uv run hud export-coreml
+uv run --with numpy==2.3.5 hud export-coreml
 ```
+
+（`--with numpy==2.3.5` 是給 YOLO 的匯出用的：Ultralytics 的 CoreML 匯出在 numpy 2.4 會失敗。只寫 `uv run hud export-coreml` 也可以，TrackNet 照樣會轉好，YOLO 會跳過。）
 
 想讓同 Wi-Fi 的手機也能開：`uv run hud web --lan --password 自己設的密碼`。
 

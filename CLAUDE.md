@@ -33,7 +33,8 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   fallback = 0.1 s window average converted with from_window_avg. Weights/thresholds were tuned
   on ONE broadcast singles rally (3 versions) -> re-check on real doubles phone footage.
 - TrackNet on CoreML when models/tracknetv3/TrackNet.mlpackage exists (`hud export-coreml`, Mac);
-  vouched for against PyTorch per video. YOLO CoreML export currently fails upstream.
+  vouched for against PyTorch per video. YOLO CoreML export needs numpy <= 2.3.5
+  (`uv run --with numpy==2.3.5 hud export-coreml`; with numpy 2.4 its attention block fails).
 - Venues (hud/venue.py, data/venues/): calibrate an empty-court clip once, save; a match from the
   same spot aligns to it (ORB homography -> court.snap -> plausibility). On the user's panning
   portrait clip it aligned 4/4 camera positions (~900 inliers, 0.3 s) where auto-detect got 2/4.
