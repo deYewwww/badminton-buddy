@@ -38,6 +38,10 @@ MAX_OUT_SIDE = 1920
 LOCK_S, BANNER_S = 1.0, 1.6
 COST_S = 0.9                 # stroke-cost popup on the name tag
 TRAIL_N = 8                  # shuttle tail, frames
+TRACK_MIN = 5                # shuttle drawn only on runs of at least this many real sightings
+POS_SMOOTH_S, BOX_SMOOTH_S = 0.3, 0.4  # display smoothing of feet (rings) and boxes (name tags)
+TAG_EASE = 0.35              # name tags move this fraction of the way to their new place per frame
+TAG_HOLD_S = 1.0             # ... and stay put this long when the player's box is lost
 COST_LABEL = {"defence": "防守", "other": "擊球"}
 MOVE_MS, STOP_MS = 2.0, 0.8  # target marker while faster than this; ARRIVED once below STOP_MS
 
@@ -114,21 +118,21 @@ def load(out_dir, F, fps):
         g = pl[(pl.player_id == pid) & (pl.frame < F)]
         pos[g.frame, k] = g[["x_m", "y_m"]].to_numpy()
         box[g.frame, k] = g[["box_x1", "box_y1", "box_x2", "box_y2"]].to_numpy()
-    # smooth foot jitter (0.2 s), then fill short gaps so rings don't blink
+    # fill short gaps so rings don't blink, then smooth what the eye follows: feet over 0.3 s (the
+    # positions are already RTS-smoothed), boxes (name tags) over 0.4 s. Centred windows: no lag
     w = max(1, int(0.2 * fps))
+    wp, wb = max(1, int(POS_SMOOTH_S * fps)), max(1, int(BOX_SMOOTH_S * fps))
     for k in range(4):
         for d in range(2):
-            s = pd.Series(pos[:, k, d])
-            pos[:, k, d] = s.interpolate(limit=int(fps), limit_area="inside").rolling(w, center=True, min_periods=1).mean()
+            s = pd.Series(pos[:, k, d]).interpolate(limit=int(fps), limit_area="inside")
+            pos[:, k, d] = s.rolling(wp, center=True, min_periods=1).mean().where(s.notna())
         for d in range(4):
-            box[:, k, d] = pd.Series(box[:, k, d]).interpolate(limit=int(fps // 2), limit_area="inside").to_numpy()
+            s = pd.Series(box[:, k, d]).interpolate(limit=int(fps // 2), limit_area="inside")
+            box[:, k, d] = s.rolling(wb, center=True, min_periods=1).mean().where(s.notna()).to_numpy()
     shots = pd.read_parquet(p["shots"]) if p["shots"].exists() else pd.DataFrame()
     rallies = pd.read_parquet(p["rallies"]) if p["rallies"].exists() else pd.DataFrame()
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
-    shuttle = np.full((F, 2), np.nan)
-    if sh is not None:
-        g = sh[sh.visible & (sh.frame < F)]
-        shuttle[g.frame] = g[["x_px", "y_px"]].to_numpy()
+    shuttle = shown_track(sh, F, lens_short(out_dir)) if sh is not None else np.full((F, 2), np.nan)
 
     step = np.r_[np.zeros((1, 4)), np.nan_to_num(np.hypot(*np.diff(pos, axis=0).transpose(2, 0, 1)))]
     step = np.minimum(step, 12.0 / fps)  # > 12 m/s is an identity jump, not running
@@ -137,12 +141,94 @@ def load(out_dir, F, fps):
     for i, r in enumerate(rallies.itertuples()):
         rally_of[int(r.start_frame):min(int(r.end_frame) + 1, F)] = i
     sc = cfg["move"]
-    stamina, costs = stamina_track(step, speed, rally_of, shots, fps, cfg["stamina"])
+    stamina, costs = stamina_track(step, speed, rally_of, shots, fps, cfg["stamina"], accelerations(pos, fps))
+    moving = move_states(speed, fps)
     win = max(1, int(sc["window_s"] * fps))
     move = np.stack([np.convolve(step[:, k], np.ones(win), "full")[:F] for k in range(4)], 1) / sc["full_scale_m"]
     return dict(pos=pos, box=box, shots=shots, rallies=rallies, shuttle=shuttle, speed=speed, stamina=stamina, costs=costs,
-                move=np.clip(move, 0, 1), rally_of=rally_of, names=names(out_dir), cfg=cfg,
+                move=np.clip(move, 0, 1), moving=moving, rally_of=rally_of, names=names(out_dir), cfg=cfg,
                 colors={pid: hex_bgr(cfg["colors"][pid]) for pid in PIDS})
+
+
+def lens_short(out_dir):
+    """Short side (px) of the camera behind the analysed frames (the lens, for a stabilised canvas)."""
+    import json
+    from hud.pipeline import paths
+    from hud.stabilize import native_size
+    p = paths(out_dir)
+    f = p["stab_calib"] if p["stab_calib"].exists() else p["calib"]
+    try:
+        c = json.loads(f.read_text())
+        return float(min(native_size(c["video"]) or c["frame_size"]))
+    except (OSError, ValueError, KeyError):
+        return 1080.0
+
+
+def shown_track(sh, F, short=1080, min_run=TRACK_MIN, max_gap=2, max_step=0.1):
+    """(F, 2) shuttle pixels to draw: real TrackNet sightings only (no InpaintNet guesses, no
+    interpolation), and only runs of at least min_run frames that move like one shuttle (a
+    step of at most max_step of the camera's short side (px) per frame, gaps of max_gap frames
+    filled). A stray sighting on a light or a shoe makes a lone dot that jumps around: hidden."""
+    out = np.full((F, 2), np.nan)
+    real = sh[sh.visible & ~sh.interpolated & (~sh.inpainted if "inpainted" in sh else True) & (sh.frame < F)]
+    if not len(real):
+        return out
+    fr, P = real.frame.to_numpy(), real[["x_px", "y_px"]].to_numpy(float)
+    run = [0]
+    for i in range(1, len(fr)):
+        gap = fr[i] - fr[i - 1]
+        if gap <= max_gap + 1 and np.hypot(*(P[i] - P[i - 1])) <= max_step * short * gap:
+            run.append(i)
+            continue
+        _keep(out, fr, P, run, min_run)
+        run = [i]
+    _keep(out, fr, P, run, min_run)
+    return out
+
+
+def _keep(out, fr, P, run, min_run):
+    if len(run) < min_run:
+        return
+    f, q = fr[run], P[run]
+    full = np.arange(f[0], f[-1] + 1)
+    out[full, 0] = np.interp(full, f, q[:, 0])
+    out[full, 1] = np.interp(full, f, q[:, 1])
+
+
+def move_states(speed, fps, on_s=0.3, off_s=0.3, arrived_s=0.6):
+    """(F, 4) 0 = nothing, 1 = MOVE, 2 = ARRIVED, with hysteresis: MOVE once faster than MOVE_MS
+    for on_s, kept until slower than STOP_MS for off_s, then ARRIVED for arrived_s. Per-frame
+    thresholds made the markers blink on and off."""
+    F = len(speed)
+    out = np.zeros((F, speed.shape[1]), np.int8)
+    on, off, arr = int(on_s * fps), int(off_s * fps), int(arrived_s * fps)
+    for k in range(speed.shape[1]):
+        v = np.nan_to_num(speed[:, k])
+        state, fast, slow, left = 0, 0, 0, 0
+        for f in range(F):
+            fast = fast + 1 if v[f] > MOVE_MS else 0
+            slow = slow + 1 if v[f] < STOP_MS else 0
+            if state != 1 and fast >= on:
+                state = 1
+            elif state == 1 and slow >= off:
+                state, left = 2, arr
+            elif state == 2:
+                left -= 1
+                state = 2 if left > 0 else 0
+            out[f, k] = state
+    return out
+
+
+def smooth_maps(M, cuts, half=3):
+    """Per-frame original -> stabilised homographies averaged over +-half frames, never across a
+    cut: the frame-to-frame ORB noise (~1 px) shook every ring and tag drawn on the original."""
+    M = np.asarray(M, float) / np.asarray(M, float)[:, 2:3, 2:3]
+    out = M.copy()
+    bounds = [0, *[c for c in cuts if 0 < c < len(M)], len(M)]
+    for a, b in zip(bounds, bounds[1:]):
+        for f in range(a, b):
+            out[f] = M[max(a, f - half):min(b, f + half + 1)].mean(0)
+    return out
 
 
 def stroke_kinds(shots):
@@ -157,33 +243,67 @@ def stroke_kinds(shots):
     return list(zip(sh.frame.astype(int), sh.player_id, kind))
 
 
-def stamina_track(step, speed, rally_of, shots, fps, st):
+def accelerations(pos, fps, half_s=0.15):
+    """(F, 4) acceleration magnitude (m/s^2) from the smoothed positions: footwork (stops,
+    pushes off, direction changes) costs more than running at the same speed."""
+    h = max(1, int(half_s * fps))
+    v = (np.roll(pos, -h, 0) - np.roll(pos, h, 0)) * fps / (2 * h)
+    a = (np.roll(v, -h, 0) - np.roll(v, h, 0)) * fps / (2 * h)
+    a[:2 * h] = a[-2 * h:] = np.nan
+    return np.nan_to_num(np.hypot(a[..., 0], a[..., 1]))
+
+
+def stamina_track(step, speed, rally_of, shots, fps, st, accel=None):
     """Per frame and player stamina (see config [stamina]) -> ((F, 4) values, [(frame, k, cost,
-    kind)] stroke costs for the HUD popups)."""
-    F = len(step)
+    kind)] stroke costs for the HUD popups).
+    Drains with effort, in proportion: running above walking pace (per_mps per m/s above
+    walk_mps), footwork (per_accel per m/s^2 above accel_free), and each stroke by type, an
+    attacking stroke more when the same player keeps attacking (streak). Standing still
+    (slower than rest_mps) recovers, slowly during a rally (a server, a partner waiting) and
+    faster between rallies, up to a ceiling that falls with fatigue x what was spent."""
+    F = len(speed)
     cost_of = st.get("shot_cost", {})
-    hit_at = {}
-    for f, pid, kind in stroke_kinds(shots):
-        if pid in PIDS and 0 <= f < F:
-            hit_at.setdefault(f, []).append((PIDS.index(pid), float(cost_of.get(kind, cost_of.get("other", 0))), kind))
+    attack = set(st.get("attack", ["smash", "drive"]))
+    hit_at, last_attack = {}, {}
+    for f, pid, kind, z in stroke_list(shots):
+        if pid not in PIDS or not 0 <= f < F:
+            continue
+        k = PIDS.index(pid)
+        c = float(cost_of.get(kind, cost_of.get("other", 0)))
+        if kind == "smash" and np.isfinite(z) and z >= st.get("jump_z_m", 2.6):
+            c += st.get("jump_extra", 0.5)
+        if kind in attack:  # attacking again within streak_s: each one costs more
+            prev_f, n = last_attack.get(k, (-10 ** 9, 0))
+            n = n + 1 if f - prev_f <= st.get("streak_s", 3.0) * fps else 0
+            last_attack[k] = (f, n)
+            c *= 1 + min(n * st.get("streak_step", 0.3), st.get("streak_max", 1.0))
+        hit_at.setdefault(f, []).append((k, c, kind))
     start, fat = float(st["start"]), float(st.get("fatigue", 0))
     cur, ceil = np.full(4, start), np.full(4, start)
     out, costs = np.zeros((F, 4)), []
-    sprint = st["per_sprint_s"] / fps
+    accel = np.zeros((F, 4)) if accel is None else accel
+    v = np.nan_to_num(speed)
     for f in range(F):
-        spent = sprint * (speed[f] > st["sprint_speed_mps"])
-        if rally_of[f] >= 0:
-            spent = spent + st["per_meter"] * step[f]
+        spent = (st["per_mps"] * np.maximum(v[f] - st["walk_mps"], 0)
+                 + st["per_accel"] * np.maximum(accel[f] - st["accel_free"], 0)) / fps
         for k, c, kind in hit_at.get(f, ()):
             spent = spent + c * (np.arange(4) == k)
             costs.append((f, k, c, kind))
         ceil = np.maximum(ceil - fat * spent, 0)
-        cur = cur - spent
-        if rally_of[f] < 0:
-            cur = cur + st.get("recover_per_s", 0) / fps
-        cur = np.clip(cur, 0, ceil)
+        rest = v[f] < st["rest_mps"]
+        back = st["recover_rally_per_s"] if rally_of[f] >= 0 else st["recover_per_s"]
+        cur = np.clip(cur - spent + rest * back / fps, 0, ceil)
         out[f] = cur
     return out, costs
+
+
+def stroke_list(shots):
+    """[(frame, player, kind, contact height)]: stroke_kinds plus how high it was hit."""
+    if not len(shots):
+        return []
+    sh = shots.sort_values("frame")
+    z = sh.contact_z_m.to_numpy(float) if "contact_z_m" in sh else np.full(len(sh), np.nan)
+    return [(f, pid, kind, zz) for (f, pid, kind), zz in zip(stroke_kinds(sh), z)]
 
 
 # --- drawing ----------------------------------------------------------------------------
@@ -193,6 +313,7 @@ class Hud:
         self.S, self.fps = S, fps
         self.Ginv = np.linalg.inv(H)
         self.Ginvs = None
+        self.tag_at = {}  # pid -> (x, y, frame) of the tag last drawn
         self.W, self.Hh = size
         self.u = min(size) / 1080  # layout unit: 1 px on a 1080-wide portrait frame
         sc = S["cfg"]["score"]
@@ -231,12 +352,13 @@ class Hud:
 
     def move_target(self, img, f, k, col):
         S, u, fps = self.S, self.u, self.fps
-        sp = S["speed"][f, k]
-        recent = S["speed"][max(0, f - int(0.6 * fps)):f + 1, k]
-        if sp > MOVE_MS:
-            dest = S["pos"][min(f + int(0.5 * fps), len(S["pos"]) - 1), k]
+        state = S["moving"][f, k]
+        if state == 1:
+            ahead = S["pos"][f:min(f + int(0.5 * fps), len(S["pos"]) - 1) + 1, k]
+            ahead = ahead[np.isfinite(ahead[:, 0])]
+            dest = ahead[-1] if len(ahead) else S["pos"][f, k]
             label = "MOVE"
-        elif len(recent) and recent.max() > MOVE_MS and sp < STOP_MS:
+        elif state == 2:
             dest, label = S["pos"][f, k], "ARRIVED"
         else:
             return
@@ -287,9 +409,17 @@ class Hud:
         for k, pid in enumerate(PIDS):
             b = S["box"][f, k]
             if not np.isfinite(b[0]):
-                continue
-            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 40 * u, k, pid, (b[0] + b[2]) / 2, b[1]])
-        items.sort(key=lambda t: t[1])
+                last = self.tag_at.get(pid)  # box lost for a moment: the tag stays put (up to TAG_HOLD_S)
+                if last is not None and f - last[2] <= TAG_HOLD_S * self.fps and np.isfinite(S["pos"][f, k, 0]):
+                    b = last[3]
+                else:
+                    continue
+            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 40 * u, k, pid, (b[0] + b[2]) / 2, b[1], b])
+        # stack in a steady order (nearest player first: depth changes slowly, unlike the box
+        # tops, whose order flipped back and forth when partners overlapped), then let each tag
+        # glide to its place instead of jumping
+        depth = lambda it: S["pos"][f, it[2], 1] if np.isfinite(S["pos"][f, it[2], 1]) else 99.0
+        items.sort(key=depth)
         placed = []
         for it in items:
             x, y = min(max(it[0], 4), self.W - tw - 4), max(it[1], 120 * u)
@@ -297,7 +427,14 @@ class Hud:
                 if abs(px - x) < tw and abs(py - y) < th + 6 * u:
                     y = py - th - 6 * u
             placed.append((x, y))
-            k, pid, hx, hy = it[2:]
+            k, pid, hx, hy, b = it[2:]
+            last = self.tag_at.get(pid)
+            if last is not None and f - last[2] <= TAG_HOLD_S * self.fps:
+                x, y = last[0] + TAG_EASE * (x - last[0]), last[1] + TAG_EASE * (y - last[1])
+            if np.isfinite(S["box"][f, k, 0]):
+                self.tag_at[pid] = (x, y, f, b)
+            else:
+                self.tag_at[pid] = (x, y, last[2], b)  # keep the time it was last really seen
             col = S["colors"][pid]
             cv2.line(img, (int(x + tw / 2), int(y + th)), (int(hx), int(hy - 6 * u)), col, max(1, int(2 * u)), cv2.LINE_AA)
             panel(img, x, y, x + tw, y + th, col)
@@ -396,10 +533,13 @@ class Hud:
             if not 0 <= age <= BANNER_S or team not in ("us", "opp"):
                 continue
             text = ("我隊 得分" if team == "us" else "對手 得分")
+            guessed = getattr(r, "point_source", "") == "guess"
             col = S["colors"]["P1" if team == "us" else "P3"]
             cx, cy = self.W / 2, 175 * u
             panel(img, cx - 190 * u, cy, cx + 190 * u, cy + 70 * u, col, alpha=0.85)
             put(img, text, 36 * u, col, cx, cy + 35 * u, "cm")
+            if guessed:  # landing not seen: say so (the editor's table fixes it)
+                put(img, "推測", 18 * u, GREY, cx + 180 * u, cy + 8 * u, "rt")
             lab = r.winning_label if isinstance(r.winning_label, str) else ""
             if lab:
                 put(img, lab, 30 * u, (60, 210, 255) if lab in ("PERFECT", "GREAT") else WHITE, cx, cy + 92 * u, "cm")
@@ -490,6 +630,8 @@ def render(video, out_dir, progress=lambda x: None):
     every = max(1, round(fps / MAX_OUT_FPS))  # 60 -> 30 fps; a 31.5 fps (VFR) clip keeps every frame
     S = load(out_dir, F, fps)
     if M is not None:
+        from hud.stabilize import cuts_of
+        M = smooth_maps(M, cuts_of(wv))
         S["box"], S["shuttle"] = to_original(S["box"], S["shuttle"], M)
     S["box"] = S["box"] * [kx, ky, kx, ky]
     S["shuttle"] = S["shuttle"] * [kx, ky]

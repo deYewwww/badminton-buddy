@@ -570,7 +570,8 @@ async function showResult(done) {
   const tb = $("#rallies"); tb.innerHTML = "";
   for (const r of R) {
     const tr = document.createElement("tr");
-    const auto = r.point_source === "fixed" ? "" : r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知";
+    const auto = r.point_source === "fixed" ? "" : (r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知")
+      + (r.point_source === "guess" ? "，推測" : r.point_source === "landing" ? "，看落點" : "");
     tr.innerHTML = `<td>${r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
       <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">不算</option></select></td>
       <td>${r.score_us ?? ""} : ${r.score_opp ?? ""}</td><td>${r.winning_label || ""}</td>`;
