@@ -4,7 +4,7 @@ import pandas as pd
 
 from hud.camera import Camera
 from hud.court import CORNERS_M, homography
-from hud.hits import best_per_team, shot_type, turn_candidates
+from hud.hits import best_per_team, geo_fit, shot_type, turn_candidates
 from hud.shuttle import clean, idle_frames
 
 
@@ -68,6 +68,18 @@ def test_hitter_by_nearest_wrist():
     ])
     best = best_per_team((1010, 380), rows, rows)
     assert best["us"][0] > best["opp"][0] and best["us"][1].player_id == "P1"
+
+
+def test_geo_fit_dive():
+    """Far player dives: racket 1.3 m to the side, 0.3 m off the floor. A near player on the other
+    side of the court can't have hit it. (One standing right under the ray could, with a 2.8 m
+    jump smash: then geometry can't tell and detect() falls back to the sides alternating.)"""
+    from types import SimpleNamespace as R
+    proj, f, C = synthetic_camera()
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    px = proj([1.7, 10.0, 0.3])
+    far, near = R(x_m=3.0, y_m=10.0), R(x_m=4.5, y_m=2.5)
+    assert geo_fit(cam, px, far)[0] and not geo_fit(cam, px, near)[0]
 
 
 def test_shot_rules():

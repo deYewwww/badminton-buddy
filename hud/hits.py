@@ -38,6 +38,9 @@ RESET_GONE_S = 0.5    # shuttle unseen this long since the last hit -> new rally
 REACH_W, REACH_UP = 0.6, 0.7  # racket reach as fractions of the player box height
 REACH_DOWN = 0.2      # below the feet line too: lunges and dives take the racket that low
 SPEED_WINDOW_S = 0.1  # "first N frames after the hit"
+TOP_EDGE = 0.12       # shuttle last/next seen this close to the top of the frame: it flew over it
+REACH_M = 1.6         # a hitter's racket is at most this far (horizontally) from their feet
+GEO_Z = (-0.2, 3.6)   # ... at this height: below the floor or above a jump smash = not them
 TAKEOFF_S = 0.4       # hitter position = median observed stance over this long before the hit
 WRIST_WIN_S = 0.07     # nearest wrist to the shuttle within this long of the hit
 TURN_MARGIN = 0.15     # wrist scores this close: the side whose turn it is takes the hit
@@ -112,6 +115,17 @@ def best_per_team(px, players, around):
     return best
 
 
+def geo_fit(cam, px, row):
+    """Could this player have hit a shuttle seen at pixel px? The viewing ray must pass within
+    REACH_M of the vertical line above their feet, at a height a racket can reach. Measured in
+    metres, so a big near player gets no advantage over a small far one (wrist distances in
+    pixels, normalised by body height, credited a far player's diving get to the near player
+    on the broadcast test clip). -> (ok, horizontal miss in m)."""
+    c = cam.near_vertical(px, (row.x_m, row.y_m))
+    miss = float(np.hypot(c[0] - row.x_m, c[1] - row.y_m))
+    return miss <= REACH_M and GEO_Z[0] <= c[2] <= GEO_Z[1], miss
+
+
 def in_reach(px, players, with_dist=False):
     """Players whose racket-reach zone contains the shuttle pixel, nearest first."""
     out = []
@@ -176,15 +190,37 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         if found and t[i] - t[found[-1][0]] < MIN_GAP_S:
             continue
         around = pl[(pl.frame >= i - WRIST_WIN) & (pl.frame <= i + WRIST_WIN)]
-        opts = best_per_team(p[i], by_frame.get(i, pl.iloc[:0]), around)
+        here = by_frame.get(i, pl.iloc[:0])
+        opts = best_per_team(p[i], here, around)
+        # a diving or stretching player's racket is far outside their box: let geometry vouch
+        for r in here.itertuples():
+            if r.team not in opts and np.isfinite(r.x_m) and geo_fit(cam, p[i], r)[0]:
+                opts[r.team] = (0.0, r)
         if opts:
             found.append((i, opts))
-    # exchanges: split where the shuttle vanished for a while or play paused
+    # exchanges: split where the shuttle vanished for a while or play paused. A high clear
+    # that leaves through the top of the frame and comes back down is still in play.
+    top = TOP_EDGE * img_h
+
+    def gone_s(j, i):
+        longest, q = 0, j
+        while q < i:
+            if seen[q]:
+                q += 1
+                continue
+            r = q
+            while r < i and not seen[r]:
+                r += 1
+            over_top = q > 0 and r < len(p) and seen[q - 1] and p[q - 1, 1] < top and p[r, 1] < top
+            if not over_top:
+                longest = max(longest, r - q)
+            q = r
+        return longest / fps
     groups, cur = [], []
     for i, opts in found:
         if cur:
             j = cur[-1][0]
-            gone = pd.Series(~seen[j:i]).groupby(seen[j:i].cumsum()).sum().max()
+            gone = gone_s(j, i) * fps
             if gone / fps >= RESET_GONE_S or t[i] - t[j] > serve_answer_s * 2:
                 groups.append(cur)
                 cur = []
@@ -198,6 +234,12 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         prev = None
         for i, opts in g:
             team = max(opts, key=lambda k: opts[k][0])  # nearest wrist wins; see best_per_team
+            geo = {k: geo_fit(cam, p[i], v[1]) for k, v in opts.items()}
+            fits = [k for k, (ok, _) in geo.items() if ok]
+            if len(fits) == 1:  # only one side could physically have reached it
+                team = fits[0]
+            elif len(fits) == 2 and prev in fits:  # both could: sides alternate in a rally
+                team = "opp" if prev == "us" else "us"
             # ...unless it's close: then the side whose turn it is (from behind, a shuttle over
             # a near head also sits on the far player's raised wrist)
             other = "opp" if team == "us" else "us"
