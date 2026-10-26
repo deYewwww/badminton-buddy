@@ -28,6 +28,7 @@ MEDIAN_SAMPLES = 60
 MAX_GAP_S = 0.1   # interpolate invisible runs up to this long, if detected on both sides
 MAX_INPAINT_S = 0.4  # InpaintNet only bridges gaps this short (shuttle behind a body). Unbounded,
                      # it drew whole fake rallies through 5 s idle gaps on the oblique test clip
+FAR_MIN_ZOOM = 1.6  # far-court TrackNet pass only when its window magnifies the far court this much
 SPIKE_PX = 50     # at 1080p: min jump (px/frame) that can start a glitch run
 MAX_GLITCH_S = 0.15  # glitch runs up to this long are removed
 
@@ -87,6 +88,37 @@ def window(fw, fh, cam=None, margin_m=1.5, native=None):
     y0 = int(np.clip(bottom - h, 0, fh - h))
     x0 = int(round((fw - w) / 2)) if w > fw else 0
     return x0, y0, w, h
+
+
+def far_window(cam, fw, fh, main=None, min_zoom=FAR_MIN_ZOOM):
+    """(x0, y0, w, h) 16:9 window over the far half (floor to 4.5 m up), for a second TrackNet
+    pass where the far court is small: from a low phone the far shuttle is 1-2 px in the main
+    window and gets lost against the far wall. None unless it magnifies the far court at least
+    min_zoom times over the main window (landscape footage from behind: not worth the time)."""
+    from hud.court import COURT_L, COURT_W, NET_Y
+    pts = [cam.project((x, y, z)) for x in (-0.8, COURT_W + 0.8) for y in (NET_Y - 1, COURT_L + 1) for z in (0.0, 4.5)
+           if (cam.R @ (np.array([x, y, z]) - cam.C))[2] > 0.3]
+    if len(pts) < 8:
+        return None
+    p = np.array(pts)
+    (x0, y0), (x1, y1) = p.min(0), p.max(0)
+    w = max(x1 - x0, (y1 - y0) * 16 / 9, 256)
+    h = w * 9 / 16
+    main_w = main[2] if main is not None else fw
+    if main_w / w < min_zoom or w > fw or h > fh:
+        return None
+    x = int(np.clip((x0 + x1) / 2 - w / 2, 0, fw - w))
+    y = int(np.clip((y0 + y1) / 2 - h / 2, 0, fh - h))
+    return x, y, int(w), int(h)
+
+
+def merge_far(main, far):
+    """Frames the main pass missed (or only inpainted) take the far pass's real sightings."""
+    take = ((far.Visibility == 1) & ~far.inpainted & ((main.Visibility == 0) | main.inpainted)).to_numpy()
+    out = main.copy()
+    out.loc[take, ["X", "Y"]] = far.loc[take, ["X", "Y"]].to_numpy()
+    out.loc[take, "Visibility"], out.loc[take, "inpainted"] = 1, False
+    return out, int(take.sum())
 
 
 def _crop(win, fw):
@@ -366,7 +398,13 @@ def run(video, out, players_path=None, calib_path=None):
     if win is not None:
         print(f"TrackNet window {win} of a {int(width)}x{int(height)} frame")
     lens = native_size(video) or (width, height)
-    df = clean(run_tracknet(video, idle=idle, box=box, win=win), times, min(lens), fps)  # px scale: short side
+    raw = run_tracknet(video, idle=idle, box=box, win=win)
+    far = far_window(cam, width, height, win) if cam is not None and cfg.get("far_pass", True) else None
+    if far is not None:  # ACE clip, 30 s of play: shuttle found 52% -> 58% of frames, hits 27 -> 31
+        print(f"TrackNet far-court pass {far}")
+        raw, n = merge_far(raw, run_tracknet(video, idle=idle, box=box, win=far))
+        print(f"Far-court pass added {n} sightings")
+    df = clean(raw, times, min(lens), fps)  # px scale: short side
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     det = int((df.visible & ~df.interpolated & ~df.inpainted).sum())

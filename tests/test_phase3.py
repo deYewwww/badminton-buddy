@@ -98,6 +98,19 @@ def test_landing_settles_despite_tracker_wobble():
     assert landed_at(p, 0, len(p), still_px=3, still_n=9) == len(p)  # the old 3 px never settled
 
 
+def test_far_pass_fills_main_gaps_only():
+    from hud.shuttle import far_window, merge_far
+    main = pd.DataFrame(dict(Frame=range(4), Visibility=[1, 0, 1, 1], X=[10.0, 0, 30, 40], Y=[5.0, 0, 7, 8],
+                             inpainted=[False, False, True, False]))
+    far = pd.DataFrame(dict(Frame=range(4), Visibility=[1, 1, 1, 0], X=[11.0, 21, 31, 0], Y=[5.0, 6, 7, 0],
+                            inpainted=[False, False, False, False]))
+    out, n = merge_far(main, far)
+    assert n == 2 and out.X.tolist() == [10, 21, 31, 40] and not out.inpainted.any()
+    cam, H, proj = low_camera()
+    w = far_window(cam, 720, 1280, (-280, 189, 1280, 720))
+    assert w is not None and w[2] < 1280 / 1.6 and w[0] >= 0 and w[1] + w[3] <= 1280
+
+
 def test_work_files_default_to_original(tmp=None):
     import tempfile
     from pathlib import Path
