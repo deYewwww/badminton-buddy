@@ -141,13 +141,14 @@ def geo_fit(cam, px, row):
     return miss <= REACH_M and GEO_Z[0] <= c[2] <= GEO_Z[1], miss
 
 
-def flight(v0, u, taus, k=DRAG_K, h=1 / 150):
+def flight(v0, u, taus, k=DRAG_K, h=1 / 150, max_steps=60):
     """Shuttle position (m, relative to contact) at times taus (s, >= 0) after leaving the racket
     at v0 m/s along unit vector u: dv/dt = -k |v| v - g, RK4 with plain floats (fast for the
     few dozen steps of a fit). Drag and gravity are coupled: the 1-D closed form
     s = ln(1 + k v0 t) / k ignores that, and the ~0.1 m it is off by in 0.25 s is 10-20 px
     to a phone 10 m away, enough to pull a smash fit 35 % low."""
     taus = np.clip(np.asarray(taus, float), 0, None)
+    h = max(h, taus.max() / max_steps)  # long flights: coarser steps, RK4 stays well under 1 cm
     n = int(taus.max() / h) + 2
     vx, vy, vz = v0 * u[0], v0 * u[1], v0 * u[2]
     x = y = z = 0.0
@@ -231,25 +232,33 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
         u0 = g / (np.linalg.norm(g) + 1e-9)
     a0, e0 = np.arctan2(u0[1], u0[0]), np.arcsin(np.clip(u0[2], -0.97, 0.97))
     lo, hi = [-np.inf, -1.4, FIT_V0[0], -1 / fps, -1.5], [np.inf, 1.4, FIT_V0[1], 1 / fps, 1.5]
-    starts = sorted({float(np.clip(v, *FIT_V0)) for v in ([guess] if guess else []) + [25.0, 70.0]})
+    if guess is None and end is not None and end[0] > 0:  # whole-flight average, undone for drag
+        guess = from_window_avg(np.linalg.norm(end[1] - c0) / end[0], end[0])
+    starts = [guess] if guess else []
+    starts += [v for v in (25.0, 70.0) if not guess or abs(v - guess) > 10]
+
+    def judge(sol):
+        v0 = sol.x[2]
+        img = cam.project_many(path(sol.x)[:len(dt)])[0]
+        rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
+        if rms > 2.5 or not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
+            return None
+        try:
+            sd = np.sqrt(np.linalg.inv(sol.jac.T @ sol.jac)[2, 2])
+        except np.linalg.LinAlgError:
+            return None
+        return float(v0) if sd < FIT_MAX_REL_SD * v0 else None
     best = None
-    for v in starts:
+    for v in starts:  # the first start usually lands; others only when it is rejected
         x0 = [a0, e0, float(np.clip(v, FIT_V0[0] * 1.01, FIT_V0[1] * 0.99)), 0.0, 0.0]
-        sol = least_squares(resid, x0, bounds=(lo, hi), loss="soft_l1", f_scale=2.0,
-                            x_scale=[0.3, 0.3, 10.0, 0.01, 0.3])
+        sol = least_squares(resid, x0, bounds=(lo, hi), loss="soft_l1", f_scale=2.0, ftol=1e-4, xtol=1e-4,
+                            x_scale=[0.3, 0.3, 10.0, 0.01, 0.3])  # 1e-4: v0 to well under 1 %
         if best is None or sol.cost < best.cost:
             best = sol
-    v0 = best.x[2]
-    img = cam.project_many(path(best.x)[:len(dt)])[0]
-    rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
-    if rms > 2.5 or not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
-        return None
-    J = best.jac
-    try:
-        sd = np.sqrt(np.linalg.inv(J.T @ J)[2, 2])
-    except np.linalg.LinAlgError:
-        return None
-    return float(v0) if sd < FIT_MAX_REL_SD * v0 else None
+            v0 = judge(sol)
+            if v0 is not None:
+                return v0
+    return None
 
 
 def in_reach(px, players, with_dist=False):
