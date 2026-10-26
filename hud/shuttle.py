@@ -131,7 +131,17 @@ def idle_frames(players, times, cfg):
     return idle
 
 
-@torch.no_grad()
+def same_centres(a, b, tol=2.0):
+    """Two heatmap stacks (..., 288, 512) give the same shuttle position in every frame (both
+    unseen, or centres within tol px). Used to vouch for the CoreML copy of TrackNet."""
+    a, b = (a > 0.5).astype(np.uint8).reshape(-1, H, W), (b > 0.5).astype(np.uint8).reshape(-1, H, W)
+    for ha, hb in zip(a, b):
+        ca, cb = _locate(ha), _locate(hb)
+        if (ca is None) != (cb is None) or (ca is not None and np.hypot(ca[0] - cb[0], ca[1] - cb[1]) > tol):
+            return False
+    return True
+
+
 def outside_airspace(xy, size, box):
     """xy: (N,2) normalised TrackNet positions ((0, 0) = not seen); size: frame (w, h);
     box: image polygon of the air above the court (hits.court_airspace). -> bool (N,): seen
@@ -143,6 +153,7 @@ def outside_airspace(xy, size, box):
     return seen & ~inside
 
 
+@torch.no_grad()
 def run_tracknet(video, batch=1, idle=None, box=None):
     """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip),
     except 8-frame windows that are wholly idle (bool per frame). Even those still run while
@@ -158,6 +169,9 @@ def run_tracknet(video, batch=1, idle=None, box=None):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     cap.release()
     stride = 1
+    from hud import coreml
+    ml = coreml.tracknet()   # CoreML copy (Neural Engine), vouched for against PyTorch below
+    to_check = 30            # compare on up to this many windows, until one has a shuttle in it
     median = np.moveaxis(_median(video, n), -1, 0)
     xy = []  # normalised (x, y) per frame, (0, 0) = not seen
     windows, done, read, skipped = [], False, 0, 0
@@ -182,8 +196,23 @@ def run_tracknet(video, batch=1, idle=None, box=None):
             frames += [frames[-1]] * (L - real)  # pad the last window
             windows.append((np.concatenate([median] + frames), real))
         if windows and (len(windows) == batch or done):
-            x = torch.from_numpy(np.stack([w for w, _ in windows])).to(device).to(dtype).div(255)
-            heat = (tracknet(x) > 0.5).cpu().numpy().astype(np.uint8)
+            stack = np.stack([w for w, _ in windows])
+            torch_heat = lambda: tracknet(torch.from_numpy(stack).to(device).to(dtype).div(255)).float().cpu().numpy()
+            if ml is not None:
+                out = ml(stack.astype(np.float32) / 255)
+                if to_check:
+                    ref = torch_heat()
+                    if not same_centres(out, ref):
+                        print("CoreML TrackNet disagrees with PyTorch: using PyTorch")
+                        ml, out, to_check = None, ref, 0
+                    elif (ref > 0.5).any():
+                        print("CoreML TrackNet matches PyTorch: using CoreML")
+                        to_check = 0
+                    else:
+                        to_check -= 1
+            else:
+                out = torch_heat()
+            heat = (out > 0.5).astype(np.uint8)
             for k, (_, real) in enumerate(windows):
                 for t in range(real):
                     c = _locate(heat[k, t])

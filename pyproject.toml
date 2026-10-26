@@ -11,6 +11,7 @@ dependencies = [
     "pandas",
     "pyarrow",
     "lap>=0.5.12",
+    "coremltools>=8.0; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

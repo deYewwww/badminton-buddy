@@ -19,12 +19,16 @@ class PlayerDetector:
     def __init__(self, model=None, imgsz=960, conf=0.25, device=None):
         from ultralytics import YOLO
         # a CoreML export (Neural Engine) runs ~20% faster than PyTorch-on-MPS with the same
-        # detections; used when present. Export recipe in README.
+        # detections; used when present (`hud export-coreml`, see hud/coreml.py).
         # nano: ~10x lighter than the medium model the first version used; the far-half crop
         # pass below wins back most of the small far players it would otherwise miss
-        self.model = YOLO(model or str(MODEL), task="pose")
+        import sys
+
+        from hud.coreml import YOLO_ML
+        use_ml = model is None and sys.platform == "darwin" and YOLO_ML.exists()
+        self.model = YOLO(str(YOLO_ML) if use_ml else (model or str(MODEL)), task="pose")
         self.imgsz, self.conf = imgsz, conf
-        self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
+        self.device = None if use_ml else (device or ("mps" if torch.backends.mps.is_available() else "cpu"))
         self.far_box = None  # set to far_region(...) to enable the far-half crop pass
 
     def __call__(self, frame):

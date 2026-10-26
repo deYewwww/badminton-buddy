@@ -5,7 +5,7 @@ import pandas as pd
 from hud.camera import Camera
 from hud.court import CORNERS_M, homography
 from hud.hits import best_per_team, fit_speed, flight, from_window_avg, geo_fit, shot_type, turn_candidates
-from hud.shuttle import clean, idle_frames, outside_airspace
+from hud.shuttle import clean, idle_frames, outside_airspace, run_tracknet, same_centres
 
 
 def synthetic_camera(f=1500.0, C=(3.05, -7.0, 6.0)):
@@ -116,6 +116,22 @@ def test_airspace_mask():
     pts = [proj([3.0, 9.0, 6.0]), proj([1.0, 3.0, 1.0]), proj([-9.0, 6.0, 1.5]), proj([12.0, 3.0, 1.0]), (0, 0)]
     xy = np.array([p / [1920, 1080] if np.any(p) else p for p in pts], float)
     assert outside_airspace(xy, (1920, 1080), box).tolist() == [False, False, True, True, False]
+
+
+def test_tracknet_runs_without_autograd():
+    """run_tracknet must stay under torch.no_grad: a helper once slid in between the decorator and
+    the function, and TrackNet then built autograd graphs for a whole video (memory on 8 GB)."""
+    assert hasattr(run_tracknet, "__wrapped__")
+
+
+def test_coreml_vouching():
+    """The CoreML copy is accepted only if it puts the shuttle where PyTorch does."""
+    a = np.zeros((2, 288, 512))
+    a[0, 100:104, 200:204] = 1
+    b = a.copy()
+    assert same_centres(a, b)
+    assert not same_centres(a, np.roll(b, 20, axis=-1))
+    assert not same_centres(a, np.zeros_like(a))
 
 
 def test_shot_rules():

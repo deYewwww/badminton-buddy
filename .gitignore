@@ -7,3 +7,5 @@ out/
 # rebuilt from the .part* files on first use
 models/tracknetv3/TrackNet_best.pt
 *.tmp
+# CoreML copies, made on the Mac by `hud export-coreml`
+*.mlpackage/

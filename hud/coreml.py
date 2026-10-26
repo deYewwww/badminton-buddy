@@ -1,0 +1,58 @@
+"""CoreML copies of the two networks, so they run on the Mac's Neural Engine / GPU through
+CoreML instead of PyTorch-on-MPS. TrackNet is ~85 % of the analysis compute.
+
+    uv run hud export-coreml      # once, on the Mac (coremltools is a macOS dependency)
+
+writes models/tracknetv3/TrackNet.mlpackage and models/yolo11n-pose.mlpackage. They are
+used when present. The TrackNet copy is checked against PyTorch on the first window of every
+video (shuttle.run_tracknet) and dropped if the heatmaps disagree, so a bad export can never
+silently change results. Converting works anywhere; running needs macOS.
+"""
+import sys
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+TRACKNET_ML = ROOT / "models" / "tracknetv3" / "TrackNet.mlpackage"
+YOLO_ML = ROOT / "models" / "yolo11n-pose.mlpackage"
+H, W = 288, 512
+
+
+def export(imgsz=960):
+    import coremltools as ct
+    import torch
+
+    from hud import shuttle
+    (net, L), _ = shuttle._load_models("cpu")
+    x = torch.rand(1, (L + 1) * 3, H, W)
+    traced = torch.jit.trace(net.eval(), x)
+    m = ct.convert(traced, inputs=[ct.TensorType(name="x", shape=x.shape)], outputs=[ct.TensorType(name="heat")],
+                   compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS13,
+                   convert_to="mlprogram")
+    m.save(str(TRACKNET_ML))
+    print(f"Wrote {TRACKNET_ML}")
+    from ultralytics import YOLO
+
+    from hud.detect import MODEL
+    try:  # YOLO is ~15 % of the compute; a failed export just leaves it on PyTorch
+        out = Path(YOLO(str(MODEL), task="pose").export(format="coreml", imgsz=imgsz, half=True))
+        if out != YOLO_ML:
+            out.replace(YOLO_ML)
+        print(f"Wrote {YOLO_ML}")
+    except Exception as e:  # 2026-10: coremltools 8.3/9.0 fail on its attention block with torch 2.14
+        print(f"YOLO CoreML export failed ({e}); the pose model stays on PyTorch")
+
+
+def tracknet():
+    """-> callable (batch, C, 288, 512) float32 in [0, 1] -> heat (batch, L, 288, 512), or None
+    when not on macOS, not exported, or coremltools is missing."""
+    if sys.platform != "darwin" or not TRACKNET_ML.exists():
+        return None
+    try:
+        import coremltools as ct
+        m = ct.models.MLModel(str(TRACKNET_ML), compute_units=ct.ComputeUnit.ALL)
+    except Exception as e:  # missing package, unsupported macOS: PyTorch it is
+        print(f"CoreML TrackNet unavailable ({e}); using PyTorch")
+        return None
+    return lambda x: np.concatenate([m.predict({"x": xi[None].astype(np.float32)})["heat"] for xi in x])
