@@ -4,7 +4,7 @@ import pandas as pd
 
 from hud.camera import Camera
 from hud.court import CORNERS_M, homography
-from hud.hits import best_per_team, geo_fit, shot_type, turn_candidates
+from hud.hits import best_per_team, fit_speed, flight, from_window_avg, geo_fit, shot_type, turn_candidates
 from hud.shuttle import clean, idle_frames
 
 
@@ -80,6 +80,29 @@ def test_geo_fit_dive():
     px = proj([1.7, 10.0, 0.3])
     far, near = R(x_m=3.0, y_m=10.0), R(x_m=4.5, y_m=2.5)
     assert geo_fit(cam, px, far)[0] and not geo_fit(cam, px, near)[0]
+
+
+def test_initial_speed_under_drag():
+    """A 180 km/h clear and a 110 km/h drive, seen at 30 fps by a low 45-degree phone with 2 px
+    of noise and a contact point 0.3 m off: the physics fit must land within 8 %; the old 0.1 s
+    window average was 37-60 % low on the same shots."""
+    proj, f, C = synthetic_camera(C=(7.0, -4.0, 1.5))
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    rng = np.random.default_rng(0)
+    for c0, kmh, d in (((3.0, 2.0, 2.4), 180, (0.0, 1.0, 0.75)), ((1.5, 4.5, 1.5), 110, (0.3, 1.0, 0.05))):
+        u = np.array(d) / np.linalg.norm(d)
+        dt = np.arange(1, 25) / 30
+        X = np.array(c0) + flight(kmh / 3.6, u, dt - 0.01)  # contact 10 ms after the hit frame
+        keep = X[:, 2] > 0
+        dt, X = dt[keep], X[keep]
+        px = np.array([proj(x) for x in X]) + rng.normal(0, 2, (len(X), 2))
+        c0e = cam.near_vertical(proj(c0), np.array(c0[:2]) + [0.3, -0.2])
+        v = fit_speed(cam, c0e, dt, px, (dt[-1], X[-1]), 30)
+        assert v is not None and abs(v * 3.6 / kmh - 1) < 0.08, (kmh, v and v * 3.6)
+    # the fallback's correction: 0.1 s average of a 300 km/h smash back to 300
+    t = 0.1
+    avg = np.log1p(0.22 * 83.33 * t) / 0.22 / t
+    assert abs(from_window_avg(avg, t) - 83.33) < 0.01
 
 
 def test_shot_rules():

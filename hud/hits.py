@@ -7,11 +7,17 @@ Hit  = the 2-D shuttle path turns sharply (angle between incoming and outgoing v
        alternate over a whole exchange was tried and dropped: one stray candidate flipped
        every attribution in it.
 
-SPEED IS AN ESTIMATE. One camera sees the shuttle as a ray, not a 3-D point. We fix it with:
+SPEED IS AN ESTIMATE. One camera sees the shuttle as a ray, not a 3-D point.
   - contact point: point on the ray nearest the vertical line above the hitter's feet
-  - N frames later: the point on the straight 3-D line contact -> end of shot (next contact,
-    or the floor) closest to that frame's ray; if the ray runs almost along that line we fall
-    back to level flight at contact height
+  - initial speed (fit_speed): a shuttle loses speed fast (quadratic drag, terminal velocity
+    ~6.7 m/s), so the average over the first 0.1 s underrates a 300 km/h smash by ~40 %.
+    Instead the flight s(t) = ln(1 + k v0 t) / k along a 3-D direction, plus gravity, is fitted
+    to the detected pixels of the first ~0.25 s (reprojection error: no 3-D points are ever
+    made up from single rays). Unknowns: direction, v0, and the contact time inside its frame.
+    k is fixed by physics; fitting it too from 4-7 noisy points trades off against v0.
+  - fallback when the fit is unsure (too few frames, shot along the line of sight): the point
+    on the straight line contact -> end of shot nearest the ray 0.1 s later; if the ray runs
+    almost along that line, level flight at contact height
 Error sources: real flight curves (a clear climbs well above that line), the end point is
 itself estimated,
 the level fallback is wrong for rising/falling shots (a smash drops ~0.5 m in 0.1 s), TrackNet's centre wobbles a few px, motion blur stretches the shuttle, the hitter
@@ -39,6 +45,15 @@ REACH_W, REACH_UP = 0.6, 0.7  # racket reach as fractions of the player box heig
 REACH_DOWN = 0.2      # below the feet line too: lunges and dives take the racket that low
 SPEED_WINDOW_S = 0.1  # "first N frames after the hit"
 TOP_EDGE = 0.12       # shuttle last/next seen this close to the top of the frame: it flew over it
+DRAG_K = 0.22         # 1/m, quadratic drag of a shuttle: g / v_terminal^2, v_terminal ~6.7 m/s
+FIT_MAX_S = 1.5       # initial-speed fit: detections of the shot's flight up to this long
+FIT_MIN_PTS, FIT_MAX_PTS = 4, 30
+FIT_END_M = 0.4       # how well the end of a shot (next contact / landing) is known, m
+FIT_MAX_REL_SD = 0.4   # reject a fit whose v0 standard error is larger than this fraction. Simulated smashes
+                      # and drops: 0.25 kept 34 % (median error 11 %), 0.4 keeps 84 % (16 %); the fallback
+                      # is 20-40 % low
+FIT_PX = 2.0          # TrackNet centre noise at 1080p, px (scales the residuals)
+FIT_V0 = (3.0, 139.0)  # m/s bounds, 11..500 km/h
 REACH_M = 1.6         # a hitter's racket is at most this far (horizontally) from their feet
 GEO_Z = (-0.2, 3.6)   # ... at this height: below the floor or above a jump smash = not them
 TAKEOFF_S = 0.4       # hitter position = median observed stance over this long before the hit
@@ -124,6 +139,117 @@ def geo_fit(cam, px, row):
     c = cam.near_vertical(px, (row.x_m, row.y_m))
     miss = float(np.hypot(c[0] - row.x_m, c[1] - row.y_m))
     return miss <= REACH_M and GEO_Z[0] <= c[2] <= GEO_Z[1], miss
+
+
+def flight(v0, u, taus, k=DRAG_K, h=1 / 150):
+    """Shuttle position (m, relative to contact) at times taus (s, >= 0) after leaving the racket
+    at v0 m/s along unit vector u: dv/dt = -k |v| v - g, RK4 with plain floats (fast for the
+    few dozen steps of a fit). Drag and gravity are coupled: the 1-D closed form
+    s = ln(1 + k v0 t) / k ignores that, and the ~0.1 m it is off by in 0.25 s is 10-20 px
+    to a phone 10 m away, enough to pull a smash fit 35 % low."""
+    taus = np.clip(np.asarray(taus, float), 0, None)
+    n = int(taus.max() / h) + 2
+    vx, vy, vz = v0 * u[0], v0 * u[1], v0 * u[2]
+    x = y = z = 0.0
+    P = [(0.0, 0.0, 0.0)]
+
+    def acc(vx, vy, vz):
+        m = -k * (vx * vx + vy * vy + vz * vz) ** 0.5
+        return m * vx, m * vy, m * vz - 9.81
+    for _ in range(n):
+        a1 = acc(vx, vy, vz)
+        b2 = (vx + h / 2 * a1[0], vy + h / 2 * a1[1], vz + h / 2 * a1[2])
+        a2 = acc(*b2)
+        b3 = (vx + h / 2 * a2[0], vy + h / 2 * a2[1], vz + h / 2 * a2[2])
+        a3 = acc(*b3)
+        b4 = (vx + h * a3[0], vy + h * a3[1], vz + h * a3[2])
+        a4 = acc(*b4)
+        x += h / 6 * (vx + 2 * b2[0] + 2 * b3[0] + b4[0])
+        y += h / 6 * (vy + 2 * b2[1] + 2 * b3[1] + b4[1])
+        z += h / 6 * (vz + 2 * b2[2] + 2 * b3[2] + b4[2])
+        vx += h / 6 * (a1[0] + 2 * a2[0] + 2 * a3[0] + a4[0])
+        vy += h / 6 * (a1[1] + 2 * a2[1] + 2 * a3[1] + a4[1])
+        vz += h / 6 * (a1[2] + 2 * a2[2] + 2 * a3[2] + a4[2])
+        P.append((x, y, z))
+    P = np.array(P)
+    g = taus / h
+    i0 = np.floor(g).astype(int)
+    w = (g - i0)[:, None]
+    return P[i0] * (1 - w) + P[i0 + 1] * w
+
+
+def from_window_avg(avg, window, k=DRAG_K):
+    """Initial speed (m/s) of a shuttle that averaged `avg` m/s over its first `window` s:
+    under quadratic drag the distance is ln(1 + k v0 t) / k, so v0 = (e^(k avg t) - 1) / (k t).
+    A 300 km/h smash averages ~150 km/h over 0.1 s; this undoes that."""
+    return float(np.expm1(min(k * avg * window, 5.0)) / (k * window))
+
+
+def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
+    """Initial speed (m/s) of a shot, or None if it can't be pinned down.
+
+    dt: (N,) seconds after the hit frame; px: (N,2) detections of this shot's whole flight;
+    c0: 3-D contact estimate; end: (dt_end, xyz) where the shot ended (next hitter's contact
+    or the floor) or None; guess: a speed to start from (m/s).
+    The physical flight c0 + depth * ray + flight(v0, u, dt - t0) is fitted to the pixels by
+    robust least squares over direction u, v0, t0 (contact time inside its frame) and the
+    contact's depth along its viewing ray (the hitter-vertical guess is ~0.3 m off: tens of px
+    to a near camera). The end point anchors the depth: without it a shot flying along the
+    line of sight is ambiguous. Whole flight, not the first frames: the physics holds all the
+    way, and the deceleration over the flight is what fixes v0.
+    Rejected when the reprojection error stays large, v0 ends on a bound, or its standard
+    error exceeds 25 %."""
+    from scipy.optimize import least_squares
+    dt, px = np.asarray(dt, float), np.asarray(px, float)
+    if len(dt) > FIT_MAX_PTS:  # evenly thinned: the fit cost grows with points and flight time
+        keep = np.unique(np.linspace(0, len(dt) - 1, FIT_MAX_PTS).round().astype(int))
+        dt, px = dt[keep], px[keep]
+    if len(dt) < FIT_MIN_PTS:
+        return None
+    sig = FIT_PX * img_h / 1080
+    unit = lambda a, e: np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])
+    ray = c0 - cam.C
+    ray /= np.linalg.norm(ray)
+    t_all = dt if end is None else np.r_[dt, end[0]]
+
+    def path(q):
+        return c0 + q[4] * ray + flight(q[2], unit(q[0], q[1]), t_all - q[3])
+
+    def resid(q):
+        X = path(q)
+        img, depth = cam.project_many(X[:len(dt)])
+        r = ((img - px) / sig).ravel()
+        r = np.where(np.repeat(depth, 2) > 0.1, r, 1e3)  # behind the camera: reject
+        if end is not None:
+            r = np.r_[r, (X[-1] - end[1]) / FIT_END_M]
+        return r
+
+    if end is not None and np.linalg.norm(end[1] - c0) > 0.5:
+        u0 = (end[1] - c0) / np.linalg.norm(end[1] - c0)
+    else:  # no end of shot known: level flight through the last sighting
+        g = cam.at_height(px[-1], c0[2]) - c0
+        u0 = g / (np.linalg.norm(g) + 1e-9)
+    a0, e0 = np.arctan2(u0[1], u0[0]), np.arcsin(np.clip(u0[2], -0.97, 0.97))
+    lo, hi = [-np.inf, -1.4, FIT_V0[0], -1 / fps, -1.5], [np.inf, 1.4, FIT_V0[1], 1 / fps, 1.5]
+    starts = sorted({float(np.clip(v, *FIT_V0)) for v in ([guess] if guess else []) + [25.0, 70.0]})
+    best = None
+    for v in starts:
+        x0 = [a0, e0, float(np.clip(v, FIT_V0[0] * 1.01, FIT_V0[1] * 0.99)), 0.0, 0.0]
+        sol = least_squares(resid, x0, bounds=(lo, hi), loss="soft_l1", f_scale=2.0,
+                            x_scale=[0.3, 0.3, 10.0, 0.01, 0.3])
+        if best is None or sol.cost < best.cost:
+            best = sol
+    v0 = best.x[2]
+    img = cam.project_many(path(best.x)[:len(dt)])[0]
+    rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
+    if rms > 2.5 or not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
+        return None
+    J = best.jac
+    try:
+        sd = np.sqrt(np.linalg.inv(J.T @ J)[2, 2])
+    except np.linalg.LinAlgError:
+        return None
+    return float(v0) if sd < FIT_MAX_REL_SD * v0 else None
 
 
 def in_reach(px, players, with_dist=False):
@@ -287,13 +413,23 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         j_end = np.searchsorted(t, t[i] + SPEED_WINDOW_S, side="right")
         js = [j for j in range(i + 1, min(j_end, len(p))) if seen[j] and not shuttle.interpolated.iat[j]]
         kmh, method = None, None
-        if js:
+        stop = len(p) if end is None else min(len(p), int(end))  # up to, not including, the next contact
+        fit_js = [j for j in range(i + 1, min(stop, i + 1 + round(FIT_MAX_S * fps))) if real[j]]
+        fin = (t[end] - t[i], end3) if np.isfinite(land[0]) and end is not None else None
+        v0 = fit_speed(cam, c0, t[fit_js] - t[i], p[fit_js], fin, fps, img_h) if len(fit_js) >= FIT_MIN_PTS else None
+        if v0 is not None:
+            kmh, method = v0 * 3.6, "drag_fit"
+        elif js:
             j = js[-1]
             c1 = cam.on_line(p[j], c0, end3) if np.isfinite(land[0]) else None
             method = "line" if c1 is not None else "level"
             if c1 is None:
                 c1 = cam.at_height(p[j], c0[2])
-            kmh = float(np.linalg.norm(c1 - c0) / (t[j] - t[i]) * 3.6)
+            # window average -> initial speed under drag; the flight began ~half a frame
+            # before the hit frame on average
+            w = t[j] - t[i] + 0.5 / fps
+            kmh = from_window_avg(float(np.linalg.norm(c1 - c0)) / w, w) * 3.6
+            method += "+drag"
             if not 0 < kmh <= MAX_KMH:
                 kmh, method = None, "rejected"
         # whole-flight average (contact -> interception): a floor for the initial speed, and the
@@ -301,6 +437,8 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         avg = None
         if kind == "intercept":
             avg = float(np.linalg.norm(end3 - c0) / (nxt["timestamp"] - h["timestamp"]) * 3.6)
+            if kmh is not None and kmh < 0.9 * avg:  # a shuttle only slows down: the estimate is broken
+                kmh, method = None, "rejected"
         rows.append({**h, "speed_kmh_est": None if kmh is None else round(kmh, 1), "speed_method": method,
                      "flight_avg_kmh_est": None if avg is None else round(avg, 1),
                      "shot_type": shot_type(c0, land, kmh, avg) if np.isfinite(land[0]) else "other",
