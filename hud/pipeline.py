@@ -18,7 +18,8 @@ def paths(out_dir):
     return {k: o / v for k, v in dict(
         calib="calib.json", players="players.parquet", shuttle="shuttle.parquet", hits="hits.parquet",
         shots="shots.parquet", rallies="rallies.parquet", fixes="point_fixes.csv", names="names.json",
-        hud="hud.mp4").items()}
+        hud="hud.mp4", timing="timing.json", check="check.json", marks="marks.json",
+        check_png="check.png").items()}
 
 
 def frame(video, index=0):
@@ -62,25 +63,49 @@ def analyse(video, out_dir, progress=print, start="players"):
     p = paths(out_dir)
     stages = ["players", "shuttle", "hits", "rallies", "hud"]
     todo = stages[stages.index(start):]
-    t0 = time.time()
+    t0 = last = time.time()
+    took = {}  # seconds per stage, written to timing.json: measure before optimising
+
+    def lap(stage):
+        nonlocal last
+        took[stage], last = round(time.time() - last, 1), time.time()
     if "players" in todo:
         progress(0.0, "偵測球員…")
-        players.run(video, p["calib"], p["players"], progress=lambda x: progress(0.45 * x, "偵測球員…"))
+        players.run(video, p["calib"], p["players"], progress=lambda x: progress(0.45 * x, "偵測球員…"),
+                    marks=p["marks"])
+        lap("players")
     if "shuttle" in todo:
         progress(0.45, "追蹤羽球…")
-        shuttle.run(video, p["shuttle"])
+        shuttle.run(video, p["shuttle"], players_path=p["players"], calib_path=p["calib"])
+        lap("shuttle")
     if "hits" in todo:
         progress(0.7, "判斷擊球…")
         hits.run(p["shuttle"], p["players"], p["calib"], p["hits"])
+        lap("hits")
     if "rallies" in todo:
         progress(0.75, "切分回合、計分…")
+        from hud.stabilize import cuts_of
         rallies.run(p["hits"], p["players"], p["shots"], p["rallies"], shuttle_path=p["shuttle"],
-                    point_fixes=p["fixes"])
+                    point_fixes=p["fixes"], cuts=cuts_of(video))
+        lap("rallies")
     if "hud" in todo:
         from hud import render
         progress(0.8, "產生 HUD 影片…")
         render.render(video, out_dir, progress=lambda x: progress(0.8 + 0.2 * x, "產生 HUD 影片…"))
-    progress(1.0, f"完成（{time.time() - t0:.0f} 秒）")
+        lap("hud")
+    total = time.time() - t0
+    p["timing"].write_text(json.dumps(dict(took, total=round(total, 1)), ensure_ascii=False))
+    print("Stage seconds:", took)
+    warn = []
+    try:  # catch the usual "everything is empty" causes (bad calibration first) and say so
+        from hud import check
+        rep = check.run(out_dir, video)
+        print(check.text(rep))
+        warn = rep.get("warnings", [])
+    except Exception as e:
+        print(f"check failed: {e}")
+    progress(1.0, f"完成（{total:.0f} 秒：" + "、".join(f"{k} {v:.0f}" for k, v in took.items()) + "）"
+             + "".join("\n⚠ " + w for w in warn))
     return p
 
 

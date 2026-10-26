@@ -22,6 +22,11 @@
   button:disabled { opacity:.5; cursor:default; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
   .hint { color:var(--dim); font-size:13px; }
+  #runMsg { white-space:pre-line; }
+  #markWrap { border-radius:8px; overflow:hidden; background:#0a0f12; }
+  #mk { cursor:crosshair; }
+  .names label.pick { outline:2px solid var(--accent); border-radius:6px; }
+  .names label { cursor:pointer; padding:4px; }
   .ok { color:var(--good); } .err { color:var(--bad); }
   #drop { border:2px dashed var(--edge); border-radius:10px; padding:26px; text-align:center; color:var(--dim); cursor:pointer; }
   #drop.over { border-color:var(--accent); color:var(--text); }
@@ -61,18 +66,29 @@
       <button id="auto">自動偵測</button>
       <button id="snap">貼齊白線</button>
       <button id="reset">重設</button>
+      <button id="mode" title="四個角：直接拖球場四個角，角在畫面外就拖到灰色區域。交叉點：改用畫面裡看得到的四個白線交叉點">控制點：四個角</button>
       <span class="hint">畫面：</span><input id="t" type="range" min="-1" max="1" step="0.1" value="-1"><span id="tLabel" class="hint">背景</span>
       <button id="save" class="primary">儲存校正</button>
     </div>
-    <div class="row hint" id="calMsg">選好影片後會自動偵測球場。1–4 號點是畫面裡看得到的白線交叉點：拖動它們調整；選一個點後可用方向鍵微調（Shift = 10 px），或點一下別的小黃點，改用那個交叉點。</div>
+    <div class="row">
+      <span class="hint">場地：</span><select id="venueSel"><option value="">（還沒有存過的場地）</option></select>
+      <button id="venueApply">套用場地</button>
+      <input id="venueName" type="text" maxlength="40" placeholder="場地名稱，例如 DT 第5場 右後方">
+      <button id="venueSave">存成場地</button>
+    </div>
+    <div class="row hint" id="calMsg">選好影片後會自動偵測球場。1–4 號點是球場的四個角：角在畫面外就拖到灰色區域，讓黃線延伸出去對齊白線。選一個點後可用方向鍵微調（Shift = 10 px），或點一下別的小黃點，改用那個交叉點。</div>
     <div class="calib"><div id="canvasWrap"><canvas id="cv"></canvas></div>
       <div class="side"><canvas id="mini" width="150" height="300"></canvas>
         <div class="hint">選一個號碼點後，在這裡點交叉點：指定它是球場上的哪一點</div></div></div>
   </section>
 
   <section id="s3" class="off">
-    <h2>③ 球員名字 <span>近端（靠鏡頭）是我隊，左邊是 1 號</span></h2>
+    <h2>③ 球員 <span>選一位球員，在畫面上點他兩腳中間；哪裡認錯人，就到那個時間再點一次</span></h2>
     <div class="names" id="names"></div>
+    <div class="row"><span class="hint">畫面：</span><input id="mt" type="range" min="0" max="1" step="0.1" value="0"><span id="mtLabel" class="hint">0:00.0</span></div>
+    <div class="row hint" id="markMsg">建議在第一個回合開始前，把 4 位球員各點一次（點完一位會自動換下一位）。近端（靠鏡頭）是我隊，遠端是對手。</div>
+    <div id="markWrap"><canvas id="mk"></canvas></div>
+    <div id="markList" class="row"></div>
   </section>
 
   <section id="s4" class="off">
@@ -103,9 +119,11 @@ const NETL = [[0, NET], [W_C, NET]];
 const CORN = [[0, 0], [W_C, 0], [W_C, L_C], [0, L_C]];
 const PTS = [];  // every painted-line intersection: candidate control points
 for (const x of [0, 0.46, W_C / 2, W_C - 0.46, W_C]) for (const y of [0, 0.76, NET - 1.98, NET + 1.98, L_C - 0.76, L_C]) PTS.push([x, y]);
-// G: court (m) -> image (px). handles: 4 control points {c: court m, p: image px} that are inside
-// the frame; dragging one re-solves G from all 4, so nothing ever has to be dragged off-screen.
-let M = null, img = new Image(), G = null, handles = [], sel = -1, drag = -1, poll = null;
+// G: court (m) -> image (px). handles: 4 control points {c: court m, p: image px}; dragging one
+// re-solves G from all 4. By default they are the 4 court corners, and the view grows past the
+// frame (grey area) so a corner the camera cut off can still be placed: 1-2 corners are often
+// off-screen on a low or 45-degree phone shot. cornerMode = false uses 4 in-frame intersections.
+let M = null, img = new Image(), G = null, handles = [], sel = -1, drag = -1, poll = null, cornerMode = true;
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
@@ -150,8 +168,13 @@ async function openMatch(id) {
   $("#t").max = Math.max(0, M.duration - 0.1).toFixed(1);
   $("#t").value = -1;
   names(M.names);
+  marks = M.marks || [];
+  $("#mt").max = Math.max(0, M.duration - 0.1).toFixed(1);
+  $("#mt").value = marks.length ? marks[0].t : 0;
+  loadMarkFrame();
   G = null; handles = []; sel = -1;
   await loadFrame();
+  loadVenues();
   if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。", "ok"); }
   else autoDetect();
   showResult(M.done);
@@ -160,17 +183,34 @@ async function openMatch(id) {
 // ---- calibration canvas
 const cv = $("#cv"), ctx = cv.getContext("2d");
 let S = 1, PX = 0, PY = 0;  // image px -> canvas px: PX + x*S
+let V = [0, 0, 1, 1];        // view in image px [x0, y0, x1, y1]: the frame plus a grey margin
+const PAD = 0.04, MAXOUT = 0.6;  // margin around the frame; a corner further out than this (fraction of the frame) is not shown
+const cornerShown = c => {
+  if (!G || !front(G, c)) return false;
+  const [x, y] = proj(G, c);
+  return x >= -MAXOUT * M.w && x <= (1 + MAXOUT) * M.w && y >= -MAXOUT * M.h && y <= (1 + MAXOUT) * M.h;
+};
+function fitView(grow = false) {
+  // frame + PAD, widened to every court corner within MAXOUT (+ room to grab it)
+  let [x0, y0, x1, y1] = grow ? V : [-PAD * M.w, -PAD * M.h, (1 + PAD) * M.w, (1 + PAD) * M.h];
+  for (const c of CORN) if (cornerShown(c)) {
+    const [x, y] = proj(G, c), mx = 0.05 * M.w, my = 0.05 * M.h;
+    x0 = Math.min(x0, x - mx); x1 = Math.max(x1, x + mx); y0 = Math.min(y0, y - my); y1 = Math.max(y1, y + my);
+  }
+  const o = MAXOUT + 0.05;
+  V = [Math.max(x0, -o * M.w), Math.max(y0, -o * M.h), Math.min(x1, (1 + o) * M.w), Math.min(y1, (1 + o) * M.h)];
+}
 function layout() {
   if (!M) return;
-  const wrapW = $("#canvasWrap").clientWidth, pad = 0.04;
-  const maxH = window.innerHeight * 0.72;
-  S = Math.min(wrapW / (M.w * (1 + 2 * pad)), maxH / (M.h * (1 + 2 * pad)));
+  const wrapW = $("#canvasWrap").clientWidth, maxH = window.innerHeight * 0.72;
+  const vw = V[2] - V[0], vh = V[3] - V[1];
+  S = Math.min(wrapW / vw, maxH / vh);
   const dpr = window.devicePixelRatio || 1;
-  const cw = Math.round(M.w * (1 + 2 * pad) * S), ch = Math.round(M.h * (1 + 2 * pad) * S);
+  const cw = Math.round(vw * S), ch = Math.round(vh * S);
   cv.style.width = cw + "px"; cv.style.height = ch + "px";
   cv.width = cw * dpr; cv.height = ch * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  PX = M.w * pad * S; PY = M.h * pad * S;
+  PX = -V[0] * S; PY = -V[1] * S;
   draw();
 }
 window.onresize = layout;
@@ -178,6 +218,7 @@ async function loadFrame() {
   const t = +$("#t").value;
   $("#tLabel").textContent = t < 0 ? "背景" : fmt(t);
   await new Promise(ok => { img.onload = ok; img.src = `/api/frame?id=${M.id}&t=${t}`; });
+  if (!G) fitView();
   layout();
 }
 $("#t").onchange = loadFrame;
@@ -206,13 +247,15 @@ const front = (G, p) => (G[6] * p[0] + G[7] * p[1] + G[8]) * (G[6] * W_C / 2 + G
 const toC = p => [PX + p[0] * S, PY + p[1] * S];
 const corners = () => G && CORN.map(c => proj(G, c));
 const inFrame = (p, m = 0.02) => p[0] >= M.w * m && p[0] <= M.w * (1 - m) && p[1] >= M.h * m && p[1] <= M.h * (1 - m);
-const visible = () => G ? PTS.filter(c => front(G, c) && inFrame(proj(G, c))) : [];
+const inView = p => p[0] >= V[0] && p[0] <= V[2] && p[1] >= V[1] && p[1] <= V[3];
+const visible = (where = inView) => G ? PTS.filter(c => front(G, c) && where(proj(G, c))) : [];
 function area(ps) { let a = 0; ps.forEach((p, i) => { const q = ps[(i + 1) % ps.length]; a += p[0] * q[1] - q[0] * p[1]; }); return Math.abs(a) / 2; }
 const hullArea = ([a, b, c, d]) => Math.max(area([a, b, c, d]), area([a, b, d, c]), area([a, c, b, d]));
-function setCorners(c) { G = homography(CORN, c); pickHandles(); draw(); }
+function setCorners(c) { G = homography(CORN, c); fitView(); pickHandles(); layout(); }
 function pickHandles() {
-  // the 4 visible intersections spanning the largest area on screen (and a real area on court)
-  const vis = visible(), n = vis.length;
+  if (cornerMode && CORN.every(cornerShown)) { handles = CORN.map(c => ({c, p: proj(G, c)})); sel = -1; return; }
+  // the 4 in-frame intersections spanning the largest area on screen (and a real area on court)
+  const vis = visible(inFrame), n = vis.length;
   let best = null, ba = 0;
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) for (let l = k + 1; l < n; l++) {
     const c = [vis[i], vis[j], vis[k], vis[l]];
@@ -229,19 +272,24 @@ function resolve() { const g = homography(handles.map(h => h.c), handles.map(h =
 function draw() {
   ctx.fillStyle = "#2a3238"; ctx.fillRect(0, 0, cv.width, cv.height);
   if (img.complete) ctx.drawImage(img, PX, PY, M.w * S, M.h * S);
+  ctx.strokeStyle = "#5a6a74"; ctx.lineWidth = 1; ctx.strokeRect(PX - 0.5, PY - 0.5, M.w * S + 1, M.h * S + 1);
   if (!G) return;
-  ctx.save(); ctx.beginPath(); ctx.rect(PX, PY, M.w * S, M.h * S); ctx.clip();
-  ctx.lineWidth = 2; ctx.strokeStyle = "#ffe14a";
-  for (const [a, b] of LINES) seg(a, b);
-  ctx.setLineDash([6, 5]); ctx.strokeStyle = "#ff8a3d"; seg(...NETL); ctx.setLineDash([]);
+  // court lines: faint where they run off the frame into the grey margin, bright on the picture
+  for (const inside of [false, true]) {
+    ctx.save();
+    if (inside) { ctx.beginPath(); ctx.rect(PX, PY, M.w * S, M.h * S); ctx.clip(); } else ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2; ctx.strokeStyle = "#ffe14a";
+    for (const [a, b] of LINES) seg(a, b);
+    ctx.setLineDash([6, 5]); ctx.strokeStyle = "#ff8a3d"; seg(...NETL); ctx.setLineDash([]);
+    ctx.restore();
+  }
   ctx.fillStyle = "#ffe14a";
   for (const c of visible()) { const [x, y] = toC(proj(G, c)); ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fill(); }
-  ctx.restore();
   handles.forEach((h, i) => {
-    const [x, y] = toC(h.p);
+    const [x, y] = toC(h.p), out = !inFrame(h.p, 0);
     ctx.beginPath(); ctx.arc(x, y, i === sel ? 12 : 10, 0, 7);
     ctx.fillStyle = i === sel ? "#ff4a6e" : "#36c8f0"; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke();
+    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; if (out) ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
     ctx.font = "bold 13px sans-serif"; ctx.fillStyle = "#06222c"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(i + 1, x, y + 1); ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
   });
@@ -315,7 +363,7 @@ function loupe(p) {  // 4x magnifier in the top-left corner while dragging
 }
 function pt(e) {
   const r = cv.getBoundingClientRect();
-  return [Math.min(Math.max((e.clientX - r.left - PX) / S, 0), M.w), Math.min(Math.max((e.clientY - r.top - PY) / S, 0), M.h)];
+  return [Math.min(Math.max((e.clientX - r.left - PX) / S, V[0]), V[2]), Math.min(Math.max((e.clientY - r.top - PY) / S, V[1]), V[3])];
 }
 cv.onpointerdown = e => {
   if (!G) return;
@@ -332,7 +380,10 @@ cv.onpointerdown = e => {
   draw();
 };
 cv.onpointermove = e => { if (drag >= 0) { handles[drag].p = pt(e); resolve(); draw(); } };
-cv.onpointerup = () => { drag = -1; draw(); };
+cv.onpointerup = () => {
+  if (drag < 0) return;
+  drag = -1; fitView(true); layout();  // dragged towards the edge of the view: give it more grey margin
+};
 document.onkeydown = e => {
   if (sel < 0 || !G || !e.key.startsWith("Arrow") || document.activeElement.tagName === "INPUT") return;
   const d = e.shiftKey ? 10 : 1;
@@ -354,6 +405,47 @@ async function autoDetect() {
   }
 }
 $("#auto").onclick = autoDetect;
+function setMode(corner) {
+  cornerMode = corner;
+  $("#mode").textContent = corner ? "控制點：四個角" : "控制點：畫面內交叉點";
+  if (G) { pickHandles(); draw(); }
+}
+$("#mode").onclick = () => {
+  setMode(!cornerMode);
+  if (cornerMode && !CORN.every(cornerShown)) msg("有角離畫面太遠（或在鏡頭後面），先用畫面內的交叉點。", "err");
+};
+// ---- venues: calibrate an empty court once, apply it to every match filmed from that spot
+async function loadVenues(pick) {
+  const v = await api("/api/venues");
+  $("#venueSel").innerHTML = v.length ? v.map(n => `<option>${n.replace(/</g, "&lt;")}</option>`).join("")
+                                      : '<option value="">（還沒有存過的場地）</option>';
+  if (pick) $("#venueSel").value = pick;
+}
+$("#venueSave").onclick = async () => {
+  const name = $("#venueName").value.trim();
+  if (!G) return msg("先校正好球場，再存成場地。", "err");
+  if (!name) return msg("請先輸入場地名稱。", "err");
+  try { await api("/api/venue/save", {id:M.id, name, corners:corners()}); await loadVenues(name);
+        msg(`已存成場地「${name}」。之後在同一個位置拍的影片，選這個場地按「套用場地」即可。`, "ok"); }
+  catch (e) { msg(e.message, "err"); }
+};
+$("#venueApply").onclick = async () => {
+  const name = $("#venueSel").value;
+  if (!name) return msg("還沒有存過的場地：先用空場影片校正，再按「存成場地」。", "err");
+  msg(`對齊場地「${name}」中…`);
+  try { const j = await api("/api/venue/apply", {id:M.id, name}); setCorners(j.corners);
+        msg(`已套用場地「${name}」（對上 ${j.inliers} 個特徵點，白線吻合 ${(j.on_line * 100).toFixed(0)}%）。請看一下黃線，沒問題就按「儲存校正」。`, "ok"); }
+  catch (e) { msg(e.message, "err"); }
+};
+function calibOk(j) {
+  // Your points win. The only objection is geometric: no phone behind the near baseline could
+  // see the court like that (e.g. far corners placed on the wall). The white-line overlap is
+  // not used: it relies on the same line finder that fails on footage where auto-detect fails.
+  if (j.plausible) return true;
+  msg("這 4 個點推算不出合理的相機位置（相機應該在近端底線後方、高 0.6–8 m）。常見原因：遠端的角放到牆上或網子上，"
+      + "或點的順序錯了（1 近左、2 近右、3 遠右、4 遠左）。確定沒錯的話可以照樣分析。", "err");
+  return false;
+}
 $("#reset").onclick = () => { setCorners(defaultCorners()); msg("已重設。把 1–4 號點拖到對應的白線交叉點。"); };
 $("#snap").onclick = async () => {
   if (!G) return;
@@ -362,25 +454,90 @@ $("#snap").onclick = async () => {
   catch (e) { msg(e.message, "err"); }
 };
 $("#save").onclick = async () => {
-  try { await api("/api/calib/save", {id:M.id, corners:corners()}); msg("已儲存校正。", "ok"); }
+  try { const j = await api("/api/calib/save", {id:M.id, t:+$("#t").value, corners:corners()}); calibOk(j) && msg("已儲存校正。", "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 
-// ---- names
+// ---- players: names, and feet clicked at a time (marks.json) that pin who is who
+const PIDS = ["P1", "P2", "P3", "P4"];
+let pick = "P1", marks = [], mimg = new Image();
 function names(n) {
   $("#names").innerHTML = "";
-  for (const k of ["P1", "P2", "P3", "P4"]) {
+  for (const k of PIDS) {
     const l = document.createElement("label");
     l.innerHTML = `<span class="dot" style="background:${COLORS[k]}"></span><input type="text" value="${n[k]}" maxlength="12">`;
-    l.querySelector("input").onchange = e => api("/api/names", {id:M.id, names:{[k]:e.target.value}});
+    l.querySelector("input").onchange = e => { M.names[k] = e.target.value; api("/api/names", {id:M.id, names:{[k]:e.target.value}}); drawMarks(); };
+    l.onclick = () => { pick = k; names(M.names); };
+    if (k === pick) l.classList.add("pick");
     $("#names").appendChild(l);
   }
 }
+const mk = $("#mk"), mkx = mk.getContext("2d");
+let MK = 1;  // image px -> canvas px
+async function loadMarkFrame() {
+  const t = +$("#mt").value;
+  $("#mtLabel").textContent = fmt(t);
+  await new Promise(ok => { mimg.onload = ok; mimg.src = `/api/frame?id=${M.id}&t=${t}`; });
+  const w = $("#markWrap").clientWidth;
+  MK = Math.min(w / M.w, window.innerHeight * 0.7 / M.h);
+  const dpr = window.devicePixelRatio || 1;
+  mk.style.width = M.w * MK + "px"; mk.style.height = M.h * MK + "px";
+  mk.width = M.w * MK * dpr; mk.height = M.h * MK * dpr;
+  mkx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawMarks();
+}
+$("#mt").onchange = loadMarkFrame;
+function drawMarks() {
+  if (!mimg.complete) return;
+  mkx.drawImage(mimg, 0, 0, M.w * MK, M.h * MK);
+  const t = +$("#mt").value;
+  for (const m of marks) {
+    if (Math.abs(m.t - t) > 0.3) continue;  // marks on the frame shown
+    const x = m.x * MK, y = m.y * MK;
+    mkx.beginPath(); mkx.arc(x, y, 9, 0, 7); mkx.fillStyle = COLORS[m.pid]; mkx.fill();
+    mkx.lineWidth = 2; mkx.strokeStyle = "#fff"; mkx.stroke();
+    mkx.font = "bold 14px sans-serif"; mkx.lineWidth = 4; mkx.strokeStyle = "#000";
+    mkx.strokeText(M.names[m.pid], x + 12, y - 8); mkx.fillStyle = COLORS[m.pid]; mkx.fillText(M.names[m.pid], x + 12, y - 8);
+  }
+  $("#markList").innerHTML = marks.length ? '<span class="hint">已標記：</span>' : "";
+  for (const [i, m] of marks.entries()) {
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="dot" style="background:${COLORS[m.pid]}"></span> ${fmt(m.t)} ${M.names[m.pid]} <span title="刪除">✕</span>`;
+    b.onclick = e => {
+      if (e.target.title) { marks.splice(i, 1); saveMarks(); return drawMarks(); }
+      $("#mt").value = m.t; loadMarkFrame();
+    };
+    $("#markList").appendChild(b);
+  }
+}
+const saveMarks = () => api("/api/marks", {id:M.id, marks}).catch(e => markMsg(e.message, "err"));
+function markMsg(t, cls = "") { $("#markMsg").className = "row hint " + cls; $("#markMsg").textContent = t; }
+mk.onclick = e => {
+  if (!G) return markMsg("請先在 ② 校正球場。", "err");
+  const r = mk.getBoundingClientRect(), p = [(e.clientX - r.left) / MK, (e.clientY - r.top) / MK];
+  const toCourt = homography(corners(), CORN), c = proj(toCourt, p);  // image px -> court m
+  const far = c[1] >= NET, wantFar = pick === "P3" || pick === "P4";
+  if (c[0] < -2 || c[0] > W_C + 2 || c[1] < -3 || c[1] > L_C + 3)
+    return markMsg("這個點不在球場附近。要點在球員兩腳中間的地板上；如果明明點對了，代表 ② 的校正還不準。", "err");
+  if (far !== wantFar)
+    return markMsg(`${M.names[pick]} 是${wantFar ? "對手，應該在網子另一邊（遠端）" : "我隊，應該在網子這一邊（近端）"}。`, "err");
+  const t = +$("#mt").value;
+  marks = marks.filter(m => !(m.pid === pick && Math.abs(m.t - t) < 0.3));
+  marks.push({t, pid:pick, x:p[0], y:p[1]});
+  marks.sort((a, b) => a.t - b.t);
+  saveMarks();
+  markMsg(`已標記 ${M.names[pick]}（${fmt(t)}）。重新「開始分析」才會生效。`, "ok");
+  pick = PIDS[(PIDS.indexOf(pick) + 1) % 4];
+  names(M.names); drawMarks();
+};
 
 // ---- run & results
 async function run(start) {
   try {
-    if (start === "players") await api("/api/calib/save", {id:M.id, corners:corners()});
+    if (start === "players") {
+      const j = await api("/api/calib/save", {id:M.id, t:+$("#t").value, corners:corners()});
+      if (!calibOk(j) && !confirm("4 個點推算不出合理的相機位置（見校正區的紅字）。校正錯的話，對手、拍數、比分都會是空的。\n確定點對了，仍要開始分析嗎？")) return;
+    }
     await api("/api/run", {id:M.id, start});
   } catch (e) { return $("#runMsg").textContent = e.message; }
   $("#run").disabled = $("#rerender").disabled = true;
@@ -388,6 +545,7 @@ async function run(start) {
   poll = setInterval(async () => {
     const j = await api("/api/status");
     $("#runProg").value = j.progress; $("#runMsg").textContent = j.error ? "錯誤：" + j.error : j.msg;
+    $("#runMsg").className = "hint" + (j.error || j.msg.includes("⚠") ? " err" : "");
     if (!j.running) {
       clearInterval(poll); $("#run").disabled = $("#rerender").disabled = false;
       if (!j.error) showResult(true);

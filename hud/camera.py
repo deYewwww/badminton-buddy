@@ -54,6 +54,11 @@ class Camera:
         x = self.R @ (np.asarray(X, float) - self.C)
         return self.c + self.f * x[:2] / x[2]
 
+    def project_many(self, X):
+        """(N,3) court points -> (N,2) pixels, and depth (N,) (> 0 = in front of the camera)."""
+        x = (np.asarray(X, float) - self.C) @ self.R.T
+        return self.c + self.f * x[:, :2] / x[:, 2:3], x[:, 2]
+
     def on_line(self, px, a, b, min_sin=np.sin(np.radians(8))):
         """Point on the 3-D line a->b closest to the ray through px (where the shuttle is, if it
         flies straight from a towards b). None if the ray is nearly parallel to the line."""

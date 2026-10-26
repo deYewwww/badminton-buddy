@@ -2,16 +2,24 @@
 
 Hit  = the 2-D shuttle path turns sharply (angle between incoming and outgoing velocity
        over a short window), AND a player is within racket reach of the shuttle in the image.
-       The hitter is whoever's wrist came nearest the shuttle (best_per_team); when the two
-       sides score within TURN_MARGIN, the side whose turn it is. Forcing the sides to
-       alternate over a whole exchange was tried and dropped: one stray candidate flipped
-       every attribution in it.
+       Which side hit is decided for a whole exchange at once (assign_sides, Viterbi): each
+       hit costs per side by evidence (can that side's player physically reach the shuttle,
+       how far the ray passes from them, their nearest wrist), and the same side hitting twice
+       in a row costs a penalty, a smaller one where the shuttle was lost between the two
+       (a missed hit is likely there). Deciding hit by hit with "sides alternate" as the tie
+       break was tried: one missed hit flipped every attribution after it.
 
-SPEED IS AN ESTIMATE. One camera sees the shuttle as a ray, not a 3-D point. We fix it with:
+SPEED IS AN ESTIMATE. One camera sees the shuttle as a ray, not a 3-D point.
   - contact point: point on the ray nearest the vertical line above the hitter's feet
-  - N frames later: the point on the straight 3-D line contact -> end of shot (next contact,
-    or the floor) closest to that frame's ray; if the ray runs almost along that line we fall
-    back to level flight at contact height
+  - initial speed (fit_speed): a shuttle loses speed fast (quadratic drag, terminal velocity
+    ~6.7 m/s), so the average over the first 0.1 s underrates a 300 km/h smash by ~40 %.
+    Instead the flight s(t) = ln(1 + k v0 t) / k along a 3-D direction, plus gravity, is fitted
+    to the detected pixels of the first ~0.25 s (reprojection error: no 3-D points are ever
+    made up from single rays). Unknowns: direction, v0, and the contact time inside its frame.
+    k is fixed by physics; fitting it too from 4-7 noisy points trades off against v0.
+  - fallback when the fit is unsure (too few frames, shot along the line of sight): the point
+    on the straight line contact -> end of shot nearest the ray 0.1 s later; if the ray runs
+    almost along that line, level flight at contact height
 Error sources: real flight curves (a clear climbs well above that line), the end point is
 itself estimated,
 the level fallback is wrong for rising/falling shots (a smash drops ~0.5 m in 0.1 s), TrackNet's centre wobbles a few px, motion blur stretches the shuttle, the hitter
@@ -33,16 +41,35 @@ SPEED_JUMP = 2.0      # ...or the shuttle leaves this many times faster than it 
 AIR_MARGIN_M, AIR_TOP_M = 1.5, 9.0  # shuttle must be inside this box over our court
 MIN_PX_S = 250        # at 1080p: in or out image speed must reach this, else the 'turn' is jitter
 WINDOW_S = 0.06       # half-window for incoming/outgoing velocity
-MIN_GAP_S = 0.25      # two hits can't be closer than this
+MIN_GAP_S = 0.18      # two hits can't be closer than this (a smash returned at the net: 0.23 s)
 RESET_GONE_S = 0.5    # shuttle unseen this long since the last hit -> new rally, alternation restarts
 REACH_W, REACH_UP = 0.6, 0.7  # racket reach as fractions of the player box height
 REACH_DOWN = 0.2      # below the feet line too: lunges and dives take the racket that low
 SPEED_WINDOW_S = 0.1  # "first N frames after the hit"
+TOP_EDGE = 0.12       # shuttle last/next seen this close to the top of the frame: it flew over it
+DRAG_K = 0.22         # 1/m, quadratic drag of a shuttle: g / v_terminal^2, v_terminal ~6.7 m/s
+FIT_MAX_S = 1.5       # initial-speed fit: detections of the shot's flight up to this long
+FIT_MIN_PTS, FIT_MAX_PTS = 4, 30
+FIT_END_M = 0.4       # how well the end of a shot (next contact / landing) is known, m
+FIT_MAX_REL_SD = 0.4   # reject a fit whose v0 standard error is larger than this fraction. Simulated smashes
+                      # and drops: 0.25 kept 34 % (median error 11 %), 0.4 keeps 84 % (16 %); the fallback
+                      # is 20-40 % low
+FIT_PX = 2.0          # TrackNet centre noise at 1080p, px (scales the residuals)
+FIT_V0 = (3.0, 139.0)  # m/s bounds, 11..500 km/h
+REACH_M = 2.0         # a hitter's racket is at most this far (horizontally) from their feet: a full
+                      # lunge (step + arm + racket) reaches 1.5-1.8 m; 1.6 lost a far-court retrieve
+GEO_Z = (-0.2, 3.6)   # ... at this height: below the floor or above a jump smash = not them
 TAKEOFF_S = 0.4       # hitter position = median observed stance over this long before the hit
 WRIST_WIN_S = 0.07     # nearest wrist to the shuttle within this long of the hit
-TURN_MARGIN = 0.15     # wrist scores this close: the side whose turn it is takes the hit
+GEO_COST = 3.0        # assign_sides: that side's player can't reach the shuttle (geo_fit fails)
+MISS_W = 1.5          # ... per metre the ray passes from their vertical
+WRIST_W = 2.5         # ... times (1 - nearest-wrist score). Weights: grid search on one real rally in
+                      # 3 versions (original, 480p noisy, mirrored+cropped), 63 hits: wrong side 8 -> 1
+SAME_COST = 2.0       # the same side hits twice in a row (only possible if a hit was missed)
+SAME_LOST_COST = 0.8  # ... where the shuttle went unseen for >= 3 frames between the two
 SUPPORT_S, SUPPORT_MIN = 0.17, 0.3  # around a hit, >= 30% of frames must be real detections
 MAX_KMH = 450
+MISSED_HIT_S = 2.0    # same side hits again within this: not a landing, a hit was missed
 MAX_GAP_GONE_S = 0.3  # sighting gap longer than this after a rally's last hit = shuttle left play
 Z_RANGE = (0.2, 3.5)  # plausible contact heights, m
 PICKUP_Z_M = 0.25     # lower than this is a shuttle picked up off the floor, not a stroke
@@ -112,6 +139,167 @@ def best_per_team(px, players, around):
     return best
 
 
+def geo_fit(cam, px, row):
+    """Could this player have hit a shuttle seen at pixel px? The viewing ray must pass within
+    REACH_M of the vertical line above their feet, at a height a racket can reach. Measured in
+    metres, so a big near player gets no advantage over a small far one (wrist distances in
+    pixels, normalised by body height, credited a far player's diving get to the near player
+    on the broadcast test clip). -> (ok, horizontal miss in m)."""
+    c = cam.near_vertical(px, (row.x_m, row.y_m))
+    miss = float(np.hypot(c[0] - row.x_m, c[1] - row.y_m))
+    return miss <= REACH_M and GEO_Z[0] <= c[2] <= GEO_Z[1], miss
+
+
+def flight(v0, u, taus, k=DRAG_K, h=1 / 150, max_steps=60):
+    """Shuttle position (m, relative to contact) at times taus (s, >= 0) after leaving the racket
+    at v0 m/s along unit vector u: dv/dt = -k |v| v - g, RK4 with plain floats (fast for the
+    few dozen steps of a fit). Drag and gravity are coupled: the 1-D closed form
+    s = ln(1 + k v0 t) / k ignores that, and the ~0.1 m it is off by in 0.25 s is 10-20 px
+    to a phone 10 m away, enough to pull a smash fit 35 % low."""
+    taus = np.clip(np.asarray(taus, float), 0, None)
+    h = max(h, taus.max() / max_steps)  # long flights: coarser steps, RK4 stays well under 1 cm...
+    h = min(h, 0.3 / (k * max(v0, 1e-6)))  # ...but k*v0*h <= 0.3, or a fast start blows RK4 up
+    n = int(taus.max() / h) + 2
+    vx, vy, vz = v0 * u[0], v0 * u[1], v0 * u[2]
+    x = y = z = 0.0
+    P = [(0.0, 0.0, 0.0)]
+
+    def acc(vx, vy, vz):
+        m = -k * (vx * vx + vy * vy + vz * vz) ** 0.5
+        return m * vx, m * vy, m * vz - 9.81
+    for _ in range(n):
+        a1 = acc(vx, vy, vz)
+        b2 = (vx + h / 2 * a1[0], vy + h / 2 * a1[1], vz + h / 2 * a1[2])
+        a2 = acc(*b2)
+        b3 = (vx + h / 2 * a2[0], vy + h / 2 * a2[1], vz + h / 2 * a2[2])
+        a3 = acc(*b3)
+        b4 = (vx + h * a3[0], vy + h * a3[1], vz + h * a3[2])
+        a4 = acc(*b4)
+        x += h / 6 * (vx + 2 * b2[0] + 2 * b3[0] + b4[0])
+        y += h / 6 * (vy + 2 * b2[1] + 2 * b3[1] + b4[1])
+        z += h / 6 * (vz + 2 * b2[2] + 2 * b3[2] + b4[2])
+        vx += h / 6 * (a1[0] + 2 * a2[0] + 2 * a3[0] + a4[0])
+        vy += h / 6 * (a1[1] + 2 * a2[1] + 2 * a3[1] + a4[1])
+        vz += h / 6 * (a1[2] + 2 * a2[2] + 2 * a3[2] + a4[2])
+        P.append((x, y, z))
+    P = np.array(P)
+    g = taus / h
+    i0 = np.floor(g).astype(int)
+    w = (g - i0)[:, None]
+    return P[i0] * (1 - w) + P[i0 + 1] * w
+
+
+def from_window_avg(avg, window, k=DRAG_K):
+    """Initial speed (m/s) of a shuttle that averaged `avg` m/s over its first `window` s:
+    under quadratic drag the distance is ln(1 + k v0 t) / k, so v0 = (e^(k avg t) - 1) / (k t).
+    A 300 km/h smash averages ~150 km/h over 0.1 s; this undoes that."""
+    return float(np.expm1(min(k * avg * window, 5.0)) / (k * window))
+
+
+def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
+    """Initial speed (m/s) of a shot, or None if it can't be pinned down.
+
+    dt: (N,) seconds after the hit frame; px: (N,2) detections of this shot's whole flight;
+    c0: 3-D contact estimate; end: (dt_end, xyz) where the shot ended (next hitter's contact
+    or the floor) or None; guess: a speed to start from (m/s).
+    The physical flight c0 + depth * ray + flight(v0, u, dt - t0) is fitted to the pixels by
+    robust least squares over direction u, v0, t0 (contact time inside its frame) and the
+    contact's depth along its viewing ray (the hitter-vertical guess is ~0.3 m off: tens of px
+    to a near camera). The end point anchors the depth: without it a shot flying along the
+    line of sight is ambiguous. Whole flight, not the first frames: the physics holds all the
+    way, and the deceleration over the flight is what fixes v0.
+    Rejected when the reprojection error stays large, v0 ends on a bound, or its standard
+    error exceeds 25 %."""
+    from scipy.optimize import least_squares
+    dt, px = np.asarray(dt, float), np.asarray(px, float)
+    if len(dt) > FIT_MAX_PTS:  # evenly thinned: the fit cost grows with points and flight time
+        keep = np.unique(np.linspace(0, len(dt) - 1, FIT_MAX_PTS).round().astype(int))
+        dt, px = dt[keep], px[keep]
+    if len(dt) < FIT_MIN_PTS:
+        return None
+    sig = FIT_PX * img_h / 1080
+    unit = lambda a, e: np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])
+    ray = c0 - cam.C
+    ray /= np.linalg.norm(ray)
+    t_all = dt if end is None else np.r_[dt, end[0]]
+
+    def path(q):
+        return c0 + q[4] * ray + flight(q[2], unit(q[0], q[1]), t_all - q[3])
+
+    def resid(q):
+        X = path(q)
+        img, depth = cam.project_many(X[:len(dt)])
+        if not np.isfinite(img).all():
+            return np.full(2 * len(dt) + (3 if end is not None else 0), 1e3)
+        r = ((img - px) / sig).ravel()
+        r = np.where(np.repeat(depth, 2) > 0.1, r, 1e3)  # behind the camera: reject
+        if end is not None:
+            r = np.r_[r, (X[-1] - end[1]) / FIT_END_M]
+        return r
+
+    if end is not None and np.linalg.norm(end[1] - c0) > 0.5:
+        u0 = (end[1] - c0) / np.linalg.norm(end[1] - c0)
+    else:  # no end of shot known: level flight through the last sighting
+        g = cam.at_height(px[-1], c0[2]) - c0
+        u0 = g / (np.linalg.norm(g) + 1e-9)
+    a0, e0 = np.arctan2(u0[1], u0[0]), np.arcsin(np.clip(u0[2], -0.97, 0.97))
+    lo, hi = [-np.inf, -1.4, FIT_V0[0], -1 / fps, -1.5], [np.inf, 1.4, FIT_V0[1], 1 / fps, 1.5]
+    if guess is None and end is not None and end[0] > 0:  # whole-flight average, undone for drag
+        guess = from_window_avg(np.linalg.norm(end[1] - c0) / end[0], end[0])
+    starts = [guess] if guess else []
+    starts += [v for v in (25.0, 70.0) if not guess or abs(v - guess) > 10]
+
+    def judge(sol):
+        v0 = sol.x[2]
+        img = cam.project_many(path(sol.x)[:len(dt)])[0]
+        rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
+        if rms > 2.5 or not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
+            return None
+        try:
+            sd = np.sqrt(np.linalg.inv(sol.jac.T @ sol.jac)[2, 2])
+        except np.linalg.LinAlgError:
+            return None
+        return float(v0) if sd < FIT_MAX_REL_SD * v0 else None
+    best = None
+    for v in starts:  # the first start usually lands; others only when it is rejected
+        x0 = [a0, e0, float(np.clip(v, FIT_V0[0] * 1.01, FIT_V0[1] * 0.99)), 0.0, 0.0]
+        sol = least_squares(resid, x0, bounds=(lo, hi), loss="soft_l1", f_scale=2.0, ftol=1e-4, xtol=1e-4,
+                            x_scale=[0.3, 0.3, 10.0, 0.01, 0.3])  # 1e-4: v0 to well under 1 %
+        if best is None or sol.cost < best.cost:
+            best = sol
+            v0 = judge(sol)
+            if v0 is not None:
+                return v0
+    return None
+
+
+def assign_sides(g, p, cam, real):
+    """g: [(frame, {team: (wrist score, player row)})] of one exchange -> team per hit, the
+    cheapest sequence under the costs above (Viterbi over the two sides)."""
+    teams = ("us", "opp")
+
+    def emit(i, opts, team):
+        if team not in opts:
+            return np.inf
+        ok, miss = geo_fit(cam, p[i], opts[team][1])
+        return (0 if ok else GEO_COST) + MISS_W * miss + WRIST_W * (1 - opts[team][0])
+    cost = np.array([emit(g[0][0], g[0][1], tm) for tm in teams])
+    back = []
+    for (j, _), (i, opts) in zip(g, g[1:]):
+        lost = (~real[j + 1:i]).sum() >= 3
+        same = SAME_LOST_COST if lost else SAME_COST
+        trans = np.where(np.eye(2, dtype=bool), same, 0.0)  # same side twice: penalty
+        tot = cost[:, None] + trans                          # from (rows) -> to (cols)
+        back.append(tot.argmin(0))
+        cost = tot.min(0) + np.array([emit(i, opts, tm) for tm in teams])
+    k = int(np.argmin(cost))
+    path = [k]
+    for b in reversed(back):
+        k = int(b[k])
+        path.append(k)
+    return [teams[k] for k in reversed(path)]
+
+
 def in_reach(px, players, with_dist=False):
     """Players whose racket-reach zone contains the shuttle pixel, nearest first."""
     out = []
@@ -143,7 +331,8 @@ def shot_type(contact, land, kmh, avg_kmh=None):
     return "other"
 
 
-def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
+def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=(), frame_h=None):
+    """img_h: the pixel scale (camera short side, 1080 at 1080p); frame_h: the frame's own height."""
     p = shuttle[["x_px", "y_px"]].to_numpy(float, copy=True)
     # multi-court halls: TrackNet happily follows other courts' shuttles; keep only what is
     # inside the image of the air box above our court
@@ -176,16 +365,39 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         if found and t[i] - t[found[-1][0]] < MIN_GAP_S:
             continue
         around = pl[(pl.frame >= i - WRIST_WIN) & (pl.frame <= i + WRIST_WIN)]
-        opts = best_per_team(p[i], by_frame.get(i, pl.iloc[:0]), around)
+        here = by_frame.get(i, pl.iloc[:0])
+        opts = best_per_team(p[i], here, around)
+        # a diving or stretching player's racket is far outside their box: let geometry vouch
+        for r in here.itertuples():
+            if r.team not in opts and np.isfinite(r.x_m) and geo_fit(cam, p[i], r)[0]:
+                opts[r.team] = (0.0, r)
         if opts:
             found.append((i, opts))
-    # exchanges: split where the shuttle vanished for a while or play paused
+    # exchanges: split where the shuttle vanished for a while or play paused. A high clear
+    # that leaves through the top of the frame and comes back down is still in play.
+    top = TOP_EDGE * (frame_h or img_h)
+
+    def gone_s(j, i):
+        longest, q = 0, j
+        while q < i:
+            if seen[q]:
+                q += 1
+                continue
+            r = q
+            while r < i and not seen[r]:
+                r += 1
+            over_top = q > 0 and r < len(p) and seen[q - 1] and p[q - 1, 1] < top and p[r, 1] < top
+            if not over_top:
+                longest = max(longest, r - q)
+            q = r
+        return longest / fps
     groups, cur = [], []
     for i, opts in found:
         if cur:
             j = cur[-1][0]
-            gone = pd.Series(~seen[j:i]).groupby(seen[j:i].cumsum()).sum().max()
-            if gone / fps >= RESET_GONE_S or t[i] - t[j] > serve_answer_s * 2:
+            gone = gone_s(j, i) * fps
+            cut = any(j < c <= i for c in cuts)  # edited clip: the two sides of a cut are different moments
+            if cut or gone / fps >= RESET_GONE_S or t[i] - t[j] > serve_answer_s * 2:
                 groups.append(cur)
                 cur = []
         cur.append((i, opts))
@@ -195,24 +407,24 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         # the opener must be answered quickly, else it was the server fiddling before serving
         while len(g) > 1 and t[g[1][0]] - t[g[0][0]] > serve_answer_s:
             g = g[1:]
-        prev = None
-        for i, opts in g:
-            team = max(opts, key=lambda k: opts[k][0])  # nearest wrist wins; see best_per_team
-            # ...unless it's close: then the side whose turn it is (from behind, a shuttle over
-            # a near head also sits on the far player's raised wrist)
-            other = "opp" if team == "us" else "us"
-            if team == prev and other in opts and opts[team][0] - opts[other][0] < TURN_MARGIN:
-                team = other
-            who = opts[team][1]
+        def contact_of(i, who):
             # stance before the swing: at a jump smash the foot point projects metres too deep
             before = players_obs[(players_obs.player_id == who.player_id)
                                  & (players_obs.frame > i - TAKEOFF_S * fps) & (players_obs.frame <= i)]
             stance = before[["x_m", "y_m"]].median().to_numpy() if len(before) else (who.x_m, who.y_m)
-            contact = cam.near_vertical(p[i], stance)
-            if contact[2] < PICKUP_Z_M:  # scooped off the floor: tossing it back between points
-                continue
+            return cam.near_vertical(p[i], stance)
+        # sides for the whole exchange; a hit scooped off the floor (tossing the shuttle back) is
+        # dropped and the sides decided again without it, else it leaves a same-side pair behind
+        while g:
+            sides = assign_sides(g, p, cam, real)
+            low = [k for k, ((i, opts), tm) in enumerate(zip(g, sides)) if contact_of(i, opts[tm][1])[2] < PICKUP_Z_M]
+            if not low:
+                break
+            g = [x for k, x in enumerate(g) if k not in low]
+        for (i, opts), team in zip(g, sides if g else []):
+            who = opts[team][1]
+            contact = contact_of(i, who)
             contact[2] = np.clip(contact[2], *Z_RANGE)
-            prev = team
             hits.append(dict(frame=i, timestamp=t[i], player_id=who.player_id, team=who.team,
                              shuttle_x_px=p[i, 0], shuttle_y_px=p[i, 1], turn_deg=round(ang[i], 1),
                              contact_x_m=contact[0], contact_y_m=contact[1], contact_z_m=contact[2]))
@@ -233,9 +445,13 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
                 last_seen = q if seen[q] else last_seen
                 q += 1
             land, kind, end = (np.nan, np.nan), "unknown", last_seen
-            if last_seen is not None:
-                # where it settled, not where it was last seen: it may roll or get picked up
-                settled = landed_at(p, i + 1, last_seen)
+            # the same side hits again soon: a hit in between was missed, the shuttle never
+            # landed (calling it a landing ended the rally and threw away the hits after it)
+            soon = nxt is not None and nxt["timestamp"] - h["timestamp"] < MISSED_HIT_S
+            if last_seen is not None and not soon:
+                # where it settled, not where it was last seen: it may roll or get picked up.
+                # Still for 0.3 s: the top of a high clear seen from behind hangs for ~5 frames
+                settled = landed_at(p, i + 1, last_seen, still_n=max(5, round(0.3 * fps)))
                 g = to_court(H, [p[settled]])[0]
                 if -3 < g[0] < COURT_W + 3 and -3 < g[1] < COURT_L + 3:  # else it left the frame in the air
                     land, kind, end = tuple(g), "floor", settled
@@ -245,13 +461,23 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         j_end = np.searchsorted(t, t[i] + SPEED_WINDOW_S, side="right")
         js = [j for j in range(i + 1, min(j_end, len(p))) if seen[j] and not shuttle.interpolated.iat[j]]
         kmh, method = None, None
-        if js:
+        stop = len(p) if end is None else min(len(p), int(end))  # up to, not including, the next contact
+        fit_js = [j for j in range(i + 1, min(stop, i + 1 + round(FIT_MAX_S * fps))) if real[j]]
+        fin = (t[end] - t[i], end3) if np.isfinite(land[0]) and end is not None else None
+        v0 = fit_speed(cam, c0, t[fit_js] - t[i], p[fit_js], fin, fps, img_h) if len(fit_js) >= FIT_MIN_PTS else None
+        if v0 is not None:
+            kmh, method = v0 * 3.6, "drag_fit"
+        elif js:
             j = js[-1]
             c1 = cam.on_line(p[j], c0, end3) if np.isfinite(land[0]) else None
             method = "line" if c1 is not None else "level"
             if c1 is None:
                 c1 = cam.at_height(p[j], c0[2])
-            kmh = float(np.linalg.norm(c1 - c0) / (t[j] - t[i]) * 3.6)
+            # window average -> initial speed under drag; the flight began ~half a frame
+            # before the hit frame on average
+            w = t[j] - t[i] + 0.5 / fps
+            kmh = from_window_avg(float(np.linalg.norm(c1 - c0)) / w, w) * 3.6
+            method += "+drag"
             if not 0 < kmh <= MAX_KMH:
                 kmh, method = None, "rejected"
         # whole-flight average (contact -> interception): a floor for the initial speed, and the
@@ -259,6 +485,8 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25):
         avg = None
         if kind == "intercept":
             avg = float(np.linalg.norm(end3 - c0) / (nxt["timestamp"] - h["timestamp"]) * 3.6)
+            if kmh is not None and kmh < 0.9 * avg:  # a shuttle only slows down: the estimate is broken
+                kmh, method = None, "rejected"
         rows.append({**h, "speed_kmh_est": None if kmh is None else round(kmh, 1), "speed_method": method,
                      "flight_avg_kmh_est": None if avg is None else round(avg, 1),
                      "shot_type": shot_type(c0, land, kmh, avg) if np.isfinite(land[0]) else "other",
@@ -277,7 +505,13 @@ def run(shuttle_path, players_path, calib_path, out):
     H, calib = load(calib_path)
     cam = Camera(H, calib["frame_size"])
     fps = 1 / np.median(np.diff(shuttle.timestamp)) if len(shuttle) > 1 else 30
-    df = detect(shuttle, players, H, cam, fps, calib["frame_size"][1], config.load()["rally"]["serve_answer_s"])
+    from hud.stabilize import cuts_of, native_size
+    # pixel thresholds are tuned at 1080p and scale with the camera's short side: the frame's own
+    # height over-scaled a portrait clip 1.8x, and a stabilised canvas (2050 high) more, so the far
+    # court's small turns never registered as hits
+    lens = native_size(calib["video"]) or calib["frame_size"]
+    df = detect(shuttle, players, H, cam, fps, min(lens), config.load()["rally"]["serve_answer_s"],
+                cuts=cuts_of(calib["video"]), frame_h=calib["frame_size"][1])
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     print(f"Wrote {out}: {len(df)} hits")

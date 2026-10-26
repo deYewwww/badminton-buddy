@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from hud import court, pipeline
+from hud import court, pipeline, venue
 
 ROOT = Path(__file__).resolve().parents[1]
 UPLOADS, OUT = ROOT / "data" / "uploads", ROOT / "out"
@@ -183,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+            if u.path == "/api/venues":
+                return self._json(venue.names())
             if u.path == "/api/matches":
                 return self._json(matches())
             if u.path == "/api/match":
@@ -190,8 +192,9 @@ class Handler(BaseHTTPRequestHandler):
                 m = json.loads((d / "match.json").read_text())
                 p = pipeline.paths(d)
                 calib = json.loads(p["calib"].read_text()) if p["calib"].exists() else None
+                marks = json.loads(p["marks"].read_text()) if p["marks"].exists() else []
                 return self._json(dict(m, id=q["id"], corners=calib and calib["corners"],
-                                       names=pipeline.names(d), done=p["hud"].exists()))
+                                       names=pipeline.names(d), marks=marks, done=p["hud"].exists()))
             if u.path == "/api/frame":
                 f = calib_frame(q["id"], q.get("t"))
                 ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -251,12 +254,33 @@ class Handler(BaseHTTPRequestHandler):
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
                 corners, frac = court.snap(f, np.float64(b["corners"]))
                 return self._json(dict(corners=np.round(corners, 1).tolist(), on_line=round(frac, 2)))
+            if u.path == "/api/venue/save":  # this match's calibration + background, reusable
+                corners = b.get("corners") or json.loads(pipeline.paths(match_dir(mid))["calib"].read_text())["corners"]
+                court.homography(np.float64(corners))  # raises on a degenerate quad
+                venue.save(b["name"], bg_frame(mid), corners)
+                return self._json({"ok": True, "venues": venue.names()})
+            if u.path == "/api/venue/apply":  # align a saved venue onto this match
+                ref, rc = venue.load(b["name"])
+                corners, rep = venue.align(ref, rc, bg_frame(mid))
+                if corners is None:
+                    return self._json({"error": rep.get("error", "對不起來"), **rep}, 422)
+                return self._json(dict(rep, corners=np.round(corners, 1).tolist()))
             if u.path == "/api/calib/save":
                 v = video_of(mid)
                 i = info(v)
                 court.homography(np.float64(b["corners"]))  # raises on a degenerate quad
                 court.save(pipeline.paths(match_dir(mid))["calib"], v, (i["w"], i["h"]), b["corners"])
-                return self._json({"ok": True})
+                from hud.check import calib_fit  # warn before a 20-minute analysis on a wrong court
+                fits = [calib_fit(bg_frame(mid), b["corners"])]
+                if b.get("t") is not None and float(b["t"]) >= 0:  # the frame the user aligned on
+                    fits.append(calib_fit(calib_frame(mid, b["t"]), b["corners"]))
+                fit, plausible = max(f[0] for f in fits), fits[0][1]
+                return self._json({"ok": True, "on_line": round(fit, 2), "plausible": plausible})
+            if u.path == "/api/marks":  # player feet clicked in the editor: [{t, pid, x, y}]
+                marks = [dict(t=round(float(m["t"]), 2), pid=m["pid"], x=round(float(m["x"]), 1), y=round(float(m["y"]), 1))
+                         for m in b.get("marks", []) if m.get("pid") in ("P1", "P2", "P3", "P4")]
+                pipeline.paths(match_dir(mid))["marks"].write_text(json.dumps(marks))
+                return self._json({"ok": True, "n": len(marks)})
             if u.path == "/api/names":
                 return self._json(pipeline.names(match_dir(mid), b.get("names", {})))
             if u.path == "/api/run":

@@ -13,16 +13,63 @@ def main():
     r = sub.add_parser("run", help="命令列跑完整流程")
     r.add_argument("video")
     r.add_argument("--out", help="輸出資料夾（預設 out/<影片檔名>）")
+    r.add_argument("--venue", help="用存好的場地校正（先用 hud venue-save 存）")
     r.add_argument("--from", dest="start", default="players", choices=["players", "shuttle", "hits", "rallies", "hud"],
                    help="從哪一步開始重跑")
+    ev = sub.add_parser("eval", help="和人工標記比對：回合、擊球、比分的準確度")
+    ev.add_argument("out", help="分析資料夾")
+    ev.add_argument("truth", help="標記檔 truth.json（格式見 hud/evaluate.py）")
+    st = sub.add_parser("stabilize", help="把鏡頭有轉動（雲台追蹤）的影片對齊成固定鏡頭")
+    st.add_argument("video")
+    st.add_argument("--ref", type=float, required=True, help="參考畫面的秒數（在這一幀上校正）")
+    st.add_argument("--out", required=True, help="輸出影片，例如 data/穩定.mp4")
+    vs = sub.add_parser("venue-save", help="把一個分析資料夾的校正存成場地（建議用空場影片）")
+    vs.add_argument("name")
+    vs.add_argument("--from", dest="src", required=True, help="分析資料夾，例如 out/空場")
+    sub.add_parser("export-coreml", help="把 TrackNet 和 YOLO 轉成 CoreML（Mac 上跑得更快，只要做一次）")
+    c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
+    c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
+    if a.cmd == "eval":
+        from hud import evaluate
+        print(evaluate.text(evaluate.run(a.out, a.truth)))
+        return
+    if a.cmd == "stabilize":
+        from hud import stabilize
+        stabilize.run(a.video, a.out, a.ref)
+        print(f"完成：{a.out}（在 hud web 裡打開它，於 {a.ref} 秒校正）")
+        return
+    if a.cmd == "venue-save":
+        from hud import court, pipeline, venue
+        _, calib = court.load(pipeline.paths(a.src)["calib"])
+        d = venue.save(a.name, pipeline.background(calib["video"]), calib["corners"])
+        print(f"已存成場地「{a.name}」：{d}")
+        return
+    if a.cmd == "export-coreml":
+        from hud import coreml
+        coreml.export()
+        return
+    if a.cmd == "check":
+        from hud import check
+        print(check.text(check.run(a.out)))
+        print(f"圖：{Path(a.out) / 'check.png'}（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）")
+        return
     if a.cmd == "web":
         from hud.server import serve
         serve(a.port, a.lan, a.password)
         return
     from hud import pipeline
     out = Path(a.out or Path("out") / Path(a.video).stem)
-    if not pipeline.paths(out)["calib"].exists():
+    if a.venue:
+        from hud import court, venue
+        ref, rc = venue.load(a.venue)
+        bg = pipeline.background(a.video)
+        corners, rep = venue.align(ref, rc, bg)
+        if corners is None:
+            raise SystemExit(f"套用場地失敗：{rep.get('error')}（{rep}）")
+        court.save(pipeline.paths(out)["calib"], a.video, bg.shape[1::-1], corners)
+        print(f"套用場地「{a.venue}」：{rep}")
+    elif not pipeline.paths(out)["calib"].exists():
         calib, frac = pipeline.calibrate(a.video, out)
         if calib is None:
             raise SystemExit("找不到球場，請用 `hud web` 手動校正")

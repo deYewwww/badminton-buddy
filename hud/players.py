@@ -87,6 +87,27 @@ class IdentityTracker:
                     out[s.pid] = (s.predict(t), None)
         return out
 
+    def pin(self, pid, t, xy):
+        """The user clicked this player's feet at time t (court metres). Put the slot there.
+        A partner the tracker had at that spot is the mix-up being fixed: it takes over the
+        slot's old position and colour history (a swap); otherwise the colour history is
+        dropped and re-learnt, since it may have been learnt from the wrong person."""
+        s = next(x for x in self.slots if x.pid == pid)
+        xy = np.asarray(xy, float)
+        if (xy[1] >= NET_Y) != s.side:
+            print(f"mark {pid} at {t:.1f}s is on the wrong half of the court, ignored")
+            return False
+        other = next((o for o in self.slots if o.side == s.side and o is not s and o.pos is not None
+                      and np.hypot(*(o.pos - xy)) < MIN_SEP_M), None)
+        if other is not None:
+            other.pos, other.t, other.hist, s.hist = s.pos, s.t, s.hist, other.hist
+            other.vel = np.zeros(2)
+        else:
+            s.hist = None
+        # a pinned slot accepts a detection up to ~1.3 m away (click error on far players)
+        s.pos, s.vel, s.t = xy, np.zeros(2), t - 0.1
+        return True
+
     @staticmethod
     def _cost(s, t, d):
         c = np.hypot(*(d["xy"] - s.predict(t)))
@@ -163,9 +184,65 @@ def apply_swaps(df, path):
     return df
 
 
-def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, det_fps=DET_FPS, progress=None):
+def speeds(players, times, half=0.25):
+    """(players, frames) speed in m/s from the displacement over +-half s (foot-point jitter
+    averages out); NaN where a player isn't tracked. times: timestamp per frame."""
+    t = np.asarray(times, float)
+    n = len(t)
+    a = np.clip(np.searchsorted(t, t - half), 0, n - 1)
+    b = np.clip(np.searchsorted(t, t + half), 0, n - 1)
+    dt = np.maximum(t[b] - t[a], 1e-6)
+    out = []
+    for _, g in players.groupby("player_id"):
+        g = g[(g.frame >= 0) & (g.frame < n)]
+        pos = np.full((n, 2), np.nan)
+        pos[g.frame.to_numpy(int)] = g[["x_m", "y_m"]].to_numpy(float)
+        out.append(np.hypot(*(pos[b] - pos[a]).T) / dt)
+    return np.array(out).reshape(-1, n)
+
+
+def load_marks(path, times, H):
+    """marks.json (editor: player feet clicked at a time) -> list of (frame, pid, court xy)."""
+    if not path or not Path(path).exists():
+        return []
+    import json
+    raw = json.loads(Path(path).read_text())
+    t = np.asarray(times)
+    out = []
+    for m in raw:
+        f = int(np.clip(np.searchsorted(t, float(m["t"])), 0, len(t) - 1))
+        out.append((f, m["pid"], to_court(H, [[m["x"], m["y"]]])[0]))
+    return sorted(out, key=lambda r: r[0])
+
+
+def apply_marks(df, marks):
+    """After re-identification, the user's clicks are the final word: at each mark, if the
+    partner (not the marked player) stands nearest the clicked spot, swap the two from that
+    frame up to the next mark for this pair."""
+    if df.empty or not marks:
+        return df
+    df = df.copy()
+    partner = {"P1": "P2", "P2": "P1", "P3": "P4", "P4": "P3"}
+    for k, (f, pid, xy) in enumerate(marks):
+        pair = {pid, partner[pid]}
+        nxt = next((g for g, q, _ in marks[k + 1:] if q in pair and g > f), None)
+        here = df[(df.frame == f) & df.player_id.isin(pair)]
+        if here.empty:
+            continue
+        d = np.hypot(here.x_m - xy[0], here.y_m - xy[1])
+        near = here.player_id.iat[int(np.argmin(d.to_numpy()))]
+        if near != pid and d.min() < MIN_SEP_M:
+            m = df.player_id.isin(pair) & (df.frame >= f) & ((df.frame < nxt) if nxt is not None else True)
+            df.loc[m, "player_id"] = df.loc[m, "player_id"].map({pid: partner[pid], partner[pid]: pid})
+            print(f"mark at frame {f}: {near} was {pid}, swapped up to frame {nxt}")
+    return df
+
+
+def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, det_fps=DET_FPS, progress=None,
+        marks=None):
     """det_fps: run the (slow) pose model this many times per second and interpolate between;
-    60 fps footage at 30 halves the time, at 15 ('fast') quarters it."""
+    60 fps footage at 30 halves the time, at 15 ('fast') quarters it.
+    marks: marks.json from the editor (player feet clicked at some times), see pin/apply_marks."""
     from hud.detect import PlayerDetector, far_region
 
     w, h, fps, _ = probe(video)
@@ -183,6 +260,8 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     far = far_region(H, size)
     detect.far_box = None if far is None else (int(far[0] / kx), int(far[1] / ky), int(far[2] / kx), int(far[3] / ky))
     team = dict((p, tm) for p, tm, _ in SLOTS)
+    marks = load_marks(marks, times, H)
+    pending = list(marks)  # pinned at the first detection frame at or after each mark
     rows, failed, f = [], 0, 0
     for n, frame in enumerate(frames(video, (sw, sh), every=stride)):
         f = n * stride
@@ -206,6 +285,9 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
         dets = [dict(xy=feet[i], track_id=int(ids[i]), hist=hists[i], box=boxes[i], foot=feet_px[i],
                      wrists=wrists[i], app=apps[i])
                 for i in np.flatnonzero(inside)]
+        while pending and pending[0][0] <= f:
+            _, pid, xy = pending.pop(0)
+            tracker.pin(pid, t, xy)
         for pid, (xy, i) in tracker.update(t, dets).items():
             box = dets[i]["box"] if i is not None else [np.nan] * 4
             foot = dets[i]["foot"] if i is not None else [np.nan] * 2
@@ -228,6 +310,7 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     from hud.camera import Camera
     from hud.reid import fix_identities
     df = fix_identities(df, Camera(H, size))
+    df = apply_marks(df, marks)
     if swaps:  # manual fixes go last, on top of the automatic ones
         df = apply_swaps(df, swaps)
     Path(out).parent.mkdir(parents=True, exist_ok=True)

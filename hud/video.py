@@ -46,13 +46,16 @@ def _hw():
     return "scale_vt" in out
 
 
-def frames(path, size, every=1, rgb=False):
-    """Yield every `every`-th frame resized to size=(w, h), BGR (or RGB) uint8."""
+def frames(path, size, every=1, rgb=False, pre=None):
+    """Yield every `every`-th frame resized to size=(w, h), BGR (or RGB) uint8.
+    pre: ffmpeg filters applied before the resize (crop/pad); software decode then."""
     w, h = size
     sel = f"select='not(mod(n\\,{every}))'," if every > 1 else ""
     pix = "rgb24" if rgb else "bgr24"
     variants = []
-    if _hw():
+    if pre:
+        sel += pre + ","
+    elif _hw():
         variants.append(["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", str(path),
                          "-vf", f"{sel}scale_vt=w={w}:h={h},hwdownload,format=nv12"])
     variants.append(["-i", str(path), "-vf", f"{sel}scale={w}:{h}:flags=area"])

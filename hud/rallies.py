@@ -3,6 +3,12 @@
 Rally: consecutive hits until the shuttle settles on the floor, or play goes quiet (no real
 shuttle sighting for silence_s). Lone single-hit rallies are dropped as noise. Hits in the
 dead time after a landing (picking the shuttle up, tossing it back) are dropped.
+Pick-ups: a short "rally" (<= pickup_max_shots) in which no shot left the racket faster than
+pickup_max_kmh AND no player moved faster than pickup_max_mps is someone tossing the shuttle
+back, not play: dropped. Both signals must agree and both must be measured (players tracked,
+speeds known): a short real rally has a fast shot (a kill) or a player sprinting to it.
+Swing detection from the pose model was considered and not used: a swing lasts 0.1-0.15 s and
+the pose model runs 10 times a second, so it would often see no frame of it.
 Point: shuttle landed in the doubles court -> last hitter's team wins it, else the other team.
 In/out is ESTIMATED: the landing point carries the calibration error (~5-20 cm), so
 line calls are not reliable. Service-court rules are ignored.
@@ -58,8 +64,10 @@ def label(score, cfg):
     return "PERFECT" if score >= p["perfect"] else "GREAT" if score >= p["great"] else "GOOD" if score >= p["good"] else "OK"
 
 
-def build(shots, players, cfg, shuttle=None):
+def build(shots, players, cfg, shuttle=None, cuts=()):
     r = cfg["rally"]
+    if shots.empty:  # no hits found (e.g. shuttle not tracked): no rallies, not a crash
+        return shots, pd.DataFrame()
     shots = shots.sort_values("frame").reset_index(drop=True)
     ts = shots.timestamp.to_numpy()
     fps = _fps(shots)
@@ -77,10 +85,11 @@ def build(shots, players, cfg, shuttle=None):
         return pd.Series(~seg).groupby(seg.cumsum()).sum().max() >= quiet
     keep, rally_ids, rid, dead_until = [], [], 0, -np.inf
     for k, s in shots.iterrows():
-        if s.timestamp < dead_until:
-            continue
         prev = shots.loc[keep[-1]] if keep else None
-        if (prev is None or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind == "floor"
+        cut = prev is not None and any(prev.frame < c <= s.frame for c in cuts)  # edited clip: new moment
+        if s.timestamp < dead_until and not cut:
+            continue
+        if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind == "floor"
                 or silent_between(int(prev.frame), int(s.frame))):
             rid += 1
         keep.append(k)
@@ -131,6 +140,9 @@ def build(shots, players, cfg, shuttle=None):
             if len(seen_after):
                 end_frame = int(last.frame) + int(seen_after[gaps[0]] if len(gaps) else seen_after[-1])
             end_frame = min(end_frame, int(last.frame + r["max_flight_s"] * fps))  # no shot flies longer
+        nxt_cut = [c for c in cuts if c > last.frame]
+        if nxt_cut:
+            end_frame = min(end_frame, int(nxt_cut[0]) - 1)
         rows.append(dict(rally_id=rid, start_frame=int(g.frame.iat[0]), end_frame=end_frame,
                          start_ts=g.timestamp.iat[0], shot_count=len(g),
                          last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=ended,
@@ -140,9 +152,43 @@ def build(shots, players, cfg, shuttle=None):
                          winning_label=last.placement_label if inside else ""))
     rallies = pd.DataFrame(rows)
     if len(rallies):
+        toss = pickups(rallies, shots, players, r, fps)
+        if toss:
+            print(f"Dropped rallies {toss}: slow shots and nobody running (picking up / tossing back)")
+            shots = shots[~shots.rally_id.isin(toss)].copy()
+            rallies = rallies[~rallies.rally_id.isin(toss)].copy()
+            new = {old: k + 1 for k, old in enumerate(rallies.rally_id)}
+            shots["rally_id"], rallies["rally_id"] = shots.rally_id.map(new), rallies.rally_id.map(new)
+    if len(rallies):
         rallies["end_ts"] = rallies.start_ts + (rallies.end_frame - rallies.start_frame) / fps
         rallies["duration_s"] = (rallies.end_ts - rallies.start_ts).round(2)
     return shots, rallies
+
+
+def pickups(rallies, shots, players, r, fps):
+    """rally_ids that are someone tossing the shuttle back (see module docstring)."""
+    if "speed_kmh_est" not in shots or players is None or players.empty or "pickup_max_kmh" not in r:
+        return []
+    from hud.players import speeds
+    n = int(max(players.frame.max(), rallies.end_frame.max())) + 1
+    v = speeds(players, np.arange(n) / fps)
+    out = []
+    for ral in rallies.itertuples():
+        g = shots[shots.rally_id == ral.rally_id]
+        if len(g) > r["pickup_max_shots"]:
+            continue
+        sp = g.speed_kmh_est.astype(float)
+        if sp.isna().all():  # no shot speed measured: no evidence either way
+            continue
+        win = v[:, ral.start_frame:ral.end_frame + 1]
+        if win.size == 0 or (np.isfinite(win).sum(0) >= 2).mean() < 0.5:  # players mostly untracked
+            continue
+        fast_shot = sp.max() >= r["pickup_max_kmh"]
+        with np.errstate(invalid="ignore"):
+            running = np.nanmax(win) >= r["pickup_max_mps"]
+        if not fast_shot and not running:
+            out.append(int(ral.rally_id))
+    return out
 
 
 def _fps(shots):
@@ -153,11 +199,11 @@ def _fps(shots):
 
 
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
-        point_fixes=None):
+        point_fixes=None, cuts=()):
     from hud import score
     cfg = config.load(cfg_path)
     shuttle = pd.read_parquet(shuttle_path) if shuttle_path else None
-    shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle)
+    shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle, cuts)
     if len(rallies):
         fixes = pd.read_csv(point_fixes) if point_fixes and Path(point_fixes).exists() else None
         rallies = score.apply(rallies, cfg, fixes)

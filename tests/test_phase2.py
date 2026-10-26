@@ -4,8 +4,8 @@ import pandas as pd
 
 from hud.camera import Camera
 from hud.court import CORNERS_M, homography
-from hud.hits import best_per_team, shot_type, turn_candidates
-from hud.shuttle import clean
+from hud.hits import best_per_team, fit_speed, flight, from_window_avg, geo_fit, shot_type, turn_candidates
+from hud.shuttle import clean, idle_frames, outside_airspace, run_tracknet, same_centres
 
 
 def synthetic_camera(f=1500.0, C=(3.05, -7.0, 6.0)):
@@ -70,12 +70,111 @@ def test_hitter_by_nearest_wrist():
     assert best["us"][0] > best["opp"][0] and best["us"][1].player_id == "P1"
 
 
+def test_geo_fit_dive():
+    """Far player dives: racket 1.3 m to the side, 0.3 m off the floor. A near player on the other
+    side of the court can't have hit it. (One standing right under the ray could, with a 2.8 m
+    jump smash: then geometry can't tell and detect() falls back to the sides alternating.)"""
+    from types import SimpleNamespace as R
+    proj, f, C = synthetic_camera()
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    px = proj([1.7, 10.0, 0.3])
+    far, near = R(x_m=3.0, y_m=10.0), R(x_m=4.5, y_m=2.5)
+    assert geo_fit(cam, px, far)[0] and not geo_fit(cam, px, near)[0]
+
+
+def test_initial_speed_under_drag():
+    """A 180 km/h clear and a 110 km/h drive, seen at 30 fps by a low 45-degree phone with 2 px
+    of noise and a contact point 0.3 m off: the physics fit must land within 8 %; the old 0.1 s
+    window average was 37-60 % low on the same shots."""
+    proj, f, C = synthetic_camera(C=(7.0, -4.0, 1.5))
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    rng = np.random.default_rng(0)
+    for c0, kmh, d in (((3.0, 2.0, 2.4), 180, (0.0, 1.0, 0.75)), ((1.5, 4.5, 1.5), 110, (0.3, 1.0, 0.05))):
+        u = np.array(d) / np.linalg.norm(d)
+        dt = np.arange(1, 25) / 30
+        X = np.array(c0) + flight(kmh / 3.6, u, dt - 0.01)  # contact 10 ms after the hit frame
+        keep = X[:, 2] > 0
+        dt, X = dt[keep], X[keep]
+        px = np.array([proj(x) for x in X]) + rng.normal(0, 2, (len(X), 2))
+        c0e = cam.near_vertical(proj(c0), np.array(c0[:2]) + [0.3, -0.2])
+        v = fit_speed(cam, c0e, dt, px, (dt[-1], X[-1]), 30)
+        assert v is not None and abs(v * 3.6 / kmh - 1) < 0.08, (kmh, v and v * 3.6)
+    # fast start over a long flight stays finite (step capped by k*v0*h)
+    assert np.isfinite(flight(139.0, np.array([0, 1.0, 0]), np.array([1.5]))).all()
+    # the fallback's correction: 0.1 s average of a 300 km/h smash back to 300
+    t = 0.1
+    avg = np.log1p(0.22 * 83.33 * t) / 0.22 / t
+    assert abs(from_window_avg(avg, t) - 83.33) < 0.01
+
+
+def test_airspace_mask():
+    """Shuttle over the court (even 6 m up) is kept; a white shirt in the side stands and a
+    neighbouring court on the other side are dropped; an unseen frame is left alone. (Things straight behind the far
+    baseline project inside the box and can't be told apart in 2-D.)"""
+    from hud.hits import court_airspace
+    proj, f, C = synthetic_camera()
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    box = court_airspace(cam)
+    pts = [proj([3.0, 9.0, 6.0]), proj([1.0, 3.0, 1.0]), proj([-9.0, 6.0, 1.5]), proj([12.0, 3.0, 1.0]), (0, 0)]
+    xy = np.array([p / [1920, 1080] if np.any(p) else p for p in pts], float)
+    assert outside_airspace(xy, (0, 0, 1920, 1080), box).tolist() == [False, False, True, True, False]
+
+
+def test_tracknet_runs_without_autograd():
+    """run_tracknet must stay under torch.no_grad: a helper once slid in between the decorator and
+    the function, and TrackNet then built autograd graphs for a whole video (memory on 8 GB)."""
+    assert hasattr(run_tracknet, "__wrapped__")
+
+
+def test_coreml_vouching():
+    """The CoreML copy is accepted only if it puts the shuttle where PyTorch does."""
+    a = np.zeros((2, 288, 512))
+    a[0, 100:104, 200:204] = 1
+    b = a.copy()
+    assert same_centres(a, b)
+    assert not same_centres(a, np.roll(b, 20, axis=-1))
+    assert not same_centres(a, np.zeros_like(a))
+
+
+def test_tracknet_window():
+    """Landscape 16:9: whole frame. Portrait 720x1280: a 1280x720 window (training-size pixels),
+    padded 280 px at each side, ending just below the court floor."""
+    from hud.shuttle import window
+    assert window(1920, 1080) is None and window(1280, 720) is None
+    x0, y0, w, h = window(720, 1280)
+    assert (w, h) == (1280, 720) and x0 == -280 and y0 == 560
+    proj, f, C = synthetic_camera()
+    cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
+    assert window(1154, 2050, native=(720, 1280))[2:] == (1280, 720)  # stabilised canvas: sized by the lens
+    x0, y0, w, h = window(1440, 1080, cam)  # 4:3: crop height, bottom near the court's
+    assert (w, h) == (1440, 810) and 0 <= y0 <= 270
+
+
 def test_shot_rules():
     assert shot_type((3, 11, 2.8), (3, 2.5), 250) == "smash"
     assert shot_type((3, 5.5, 1.0), (3, 7.8), 30) == "net"
     assert shot_type((3, 5.0, 1.0), (3, 12.5), 120) == "clear"
     assert shot_type((3, 12, 2.5), (3, 8.5), 60) == "drop"
     assert shot_type((3, 9.5, 1.4), (3, 3.5), 140) == "drive"
+
+
+def test_idle_frames():
+    """30 fps, 4 players: rally 0-10 s (side steps at 2.4 m/s), standing 10-20 s, rally again
+    20-30 s. Only the middle of the standing stretch, minus the pads, is idle."""
+    fps, n = 30, 900
+    t = np.arange(n) / fps
+    cfg = dict(idle_speed_mps=1.8, pad_after_s=2.0, pad_before_s=2.0, min_skip_s=1.0)
+    play = (t < 10) | (t >= 20)
+    x = np.where(play, 3 + 0.8 * np.sin(3 * t), 3.0)  # peak speed 2.4 m/s
+    rows = [dict(frame=f, player_id=p, x_m=x[f] + k, y_m=2.0 + 6 * (k > 1)) for k, p in enumerate(["P1", "P2", "P3", "P4"])
+            for f in range(n)]
+    idle = idle_frames(pd.DataFrame(rows), t, cfg)
+    on = t[idle]
+    assert on.min() > 11.5 and on.max() < 19.0 and on.max() - on.min() > 5, (on.min(), on.max())
+    assert not idle[play].any()
+    # two players lost (dark corner): unknown, never idle
+    few = pd.DataFrame([r for r in rows if r["player_id"] in ("P1", "P3")])
+    assert not idle_frames(few, t, cfg).any()
 
 
 if __name__ == "__main__":

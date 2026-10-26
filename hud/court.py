@@ -195,8 +195,10 @@ def _batch_persp(src, dst):
     return G[ok]
 
 
-def _plausible(G, size, strict=True):
-    """Camera behind the near baseline, court in front of it, centre in frame, sane scale."""
+def _plausible(G, size, strict=True, lens_side=None):
+    """Camera behind the near baseline, court in front of it, centre in frame, sane scale.
+    lens_side: the camera's own long side in these pixels when the frame is a bigger canvas
+    (a stabilised clip): focal lengths are judged against the lens, not the canvas."""
     w, h = size
     pts = np.float64([[0, 0], [COURT_W, 0], [COURT_W, COURT_L], [0, COURT_L], [COURT_W / 2, NET_Y],
                       [COURT_W / 2, 0], [COURT_W / 2, COURT_L]])
@@ -210,10 +212,10 @@ def _plausible(G, size, strict=True):
     ok &= area < 0                                       # not mirrored (nl, nr, fr, fl anticlockwise on screen)
     near_w = np.hypot(*(xy[:, 1] - xy[:, 0]).T)
     ok &= (near_w > 0.15 * w) & (near_w < 8 * w)
-    return G, (ok & _real_camera(G, size)) if strict else ok
+    return G, (ok & _real_camera(G, size, side=lens_side)) if strict else ok
 
 
-def _real_camera(G, size, f_range=(0.3, 6.0)):
+def _real_camera(G, size, f_range=(0.3, 6.0), side=None):
     """Could a pinhole camera (square pixels, centred principal point) standing where people
     put a phone have produced G? Its first two columns, back-projected with focal f, must be
     orthogonal and of equal length (f comes from either condition, the other is the test; a
@@ -224,7 +226,7 @@ def _real_camera(G, size, f_range=(0.3, 6.0)):
     T = np.array([[1, 0, -w / 2], [0, 1, -h / 2], [0, 0, 1.0]])
     Gc = np.einsum("ij,njk->nik", T, G)
     g1, g2, g3 = Gc[:, :, 0], Gc[:, :, 1], Gc[:, :, 2]
-    s = max(w, h)
+    s = side or max(w, h)
     good = np.zeros(len(G), bool)
     with np.errstate(divide="ignore", invalid="ignore"):
         f_orth = -(g1[:, 0] * g2[:, 0] + g1[:, 1] * g2[:, 1]) / (g1[:, 2] * g2[:, 2])
@@ -268,8 +270,13 @@ def snap(frame, corners, max_shift=0.06):
 
 
 def _small(frame):
+    """Scale to WORK px on the long side, up as well as down: every pixel tolerance in here
+    (Hough lengths, line merging, scoring) is tuned at that size. A 480p clip used to be left
+    as is and auto-detection found nothing; upscaled it lands within 1 px of the 720p result."""
     s = WORK / max(frame.shape[:2])
-    return (cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else frame), min(s, 1.0)
+    if abs(s - 1) < 1e-3:
+        return frame, 1.0
+    return cv2.resize(frame, None, fx=s, fy=s, interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC), s
 
 
 def auto_detect(frame):
