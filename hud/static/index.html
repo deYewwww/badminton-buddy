@@ -22,6 +22,7 @@
   button:disabled { opacity:.5; cursor:default; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:8px 0; }
   .hint { color:var(--dim); font-size:13px; }
+  #runMsg { white-space:pre-line; }
   .ok { color:var(--good); } .err { color:var(--bad); }
   #drop { border:2px dashed var(--edge); border-radius:10px; padding:26px; text-align:center; color:var(--dim); cursor:pointer; }
   #drop.over { border-color:var(--accent); color:var(--text); }
@@ -428,6 +429,7 @@ async function run(start) {
   poll = setInterval(async () => {
     const j = await api("/api/status");
     $("#runProg").value = j.progress; $("#runMsg").textContent = j.error ? "錯誤：" + j.error : j.msg;
+    $("#runMsg").className = "hint" + (j.error || j.msg.includes("⚠") ? " err" : "");
     if (!j.running) {
       clearInterval(poll); $("#run").disabled = $("#rerender").disabled = false;
       if (!j.error) showResult(true);

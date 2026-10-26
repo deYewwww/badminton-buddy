@@ -44,6 +44,22 @@ def test_auto_detect_with_corners_off_screen():
     assert after < before and after < 0.15, (before, after)
 
 
+def test_check_flags_squeezed_calibration():
+    """The user's real failure: near corners pulled in to the frame edge, court squeezed
+    towards the net. Line overlap alone stays high-ish; the camera check must catch it."""
+    from hud.check import calib_fit
+    proj = synth()
+    img = np.full((1080, 1920, 3), (60, 140, 40), np.uint8)
+    for a, b in LINES:
+        cv2.line(img, tuple(proj(a).astype(int)), tuple(proj(b).astype(int)), (255, 255, 255), 5)
+    good = np.array([proj(c) for c in [(0, 0), (6.1, 0), (6.1, 13.4), (0, 13.4)]])
+    bad = good.copy()
+    bad[0], bad[1] = (good[0] + good[3]) / 2, (good[1] + good[2]) / 2
+    fit, ok = calib_fit(img, good)
+    assert fit > 0.9 and ok, (fit, ok)
+    assert not calib_fit(img, bad)[1]
+
+
 def test_placement():
     assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
     assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court

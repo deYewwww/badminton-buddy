@@ -15,7 +15,14 @@ def main():
     r.add_argument("--out", help="輸出資料夾（預設 out/<影片檔名>）")
     r.add_argument("--from", dest="start", default="players", choices=["players", "shuttle", "hits", "rallies", "hud"],
                    help="從哪一步開始重跑")
+    c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
+    c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
+    if a.cmd == "check":
+        from hud import check
+        print(check.text(check.run(a.out)))
+        print(f"圖：{Path(a.out) / 'check.png'}（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）")
+        return
     if a.cmd == "web":
         from hud.server import serve
         serve(a.port, a.lan, a.password)

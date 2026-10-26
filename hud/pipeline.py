@@ -18,7 +18,8 @@ def paths(out_dir):
     return {k: o / v for k, v in dict(
         calib="calib.json", players="players.parquet", shuttle="shuttle.parquet", hits="hits.parquet",
         shots="shots.parquet", rallies="rallies.parquet", fixes="point_fixes.csv", names="names.json",
-        hud="hud.mp4", timing="timing.json").items()}
+        hud="hud.mp4", timing="timing.json", check="check.json",
+        check_png="check.png").items()}
 
 
 def frame(video, index=0):
@@ -93,7 +94,16 @@ def analyse(video, out_dir, progress=print, start="players"):
     total = time.time() - t0
     p["timing"].write_text(json.dumps(dict(took, total=round(total, 1)), ensure_ascii=False))
     print("Stage seconds:", took)
-    progress(1.0, f"完成（{total:.0f} 秒：" + "、".join(f"{k} {v:.0f}" for k, v in took.items()) + "）")
+    warn = []
+    try:  # catch the usual "everything is empty" causes (bad calibration first) and say so
+        from hud import check
+        rep = check.run(out_dir, video)
+        print(check.text(rep))
+        warn = rep.get("warnings", [])
+    except Exception as e:
+        print(f"check failed: {e}")
+    progress(1.0, f"完成（{total:.0f} 秒：" + "、".join(f"{k} {v:.0f}" for k, v in took.items()) + "）"
+             + "".join("\n⚠ " + w for w in warn))
     return p
 
 

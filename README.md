@@ -38,6 +38,14 @@ uv run hud run 影片.mp4
 
 每次分析完，各步驟花的秒數會寫在 `out/<影片>/timing.json`。
 
+結果不對（沒有對手、沒有拍數、沒有比分）時，先跑健康檢查，它會指出是哪一步壞掉：
+
+```bash
+uv run hud check out/<影片>
+```
+
+它會寫出 `check.json` 和 `check.png`（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）。分析完成時也會自動檢查，有問題會顯示在「開始分析」旁邊。
+
 想讓同 Wi-Fi 的手機也能開：`uv run hud web --lan --password 自己設的密碼`。
 
 ## 拍攝建議

@@ -22,6 +22,9 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
 - Per-stage seconds go to out/<match>/timing.json. TrackNet (every frame, ~28 GFLOPs/frame) dominates.
 - TrackNet skips dead time (shuttle.idle_frames from players.parquet, [shuttle] in config.toml).
   Not yet validated on real footage: if rallies go missing, check skip_idle first.
+- `hud check out/<match>` (also run at the end of analyse): calibration fit + camera plausibility,
+  players seen per side, shuttle %, hits. A wrong calibration empties everything downstream
+  (far players dropped as off-court -> no hits -> no rallies/score).
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.
