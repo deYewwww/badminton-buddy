@@ -70,6 +70,12 @@
       <span class="hint">畫面：</span><input id="t" type="range" min="-1" max="1" step="0.1" value="-1"><span id="tLabel" class="hint">背景</span>
       <button id="save" class="primary">儲存校正</button>
     </div>
+    <div class="row">
+      <span class="hint">場地：</span><select id="venueSel"><option value="">（還沒有存過的場地）</option></select>
+      <button id="venueApply">套用場地</button>
+      <input id="venueName" type="text" maxlength="40" placeholder="場地名稱，例如 DT 第5場 右後方">
+      <button id="venueSave">存成場地</button>
+    </div>
     <div class="row hint" id="calMsg">選好影片後會自動偵測球場。1–4 號點是球場的四個角：角在畫面外就拖到灰色區域，讓黃線延伸出去對齊白線。選一個點後可用方向鍵微調（Shift = 10 px），或點一下別的小黃點，改用那個交叉點。</div>
     <div class="calib"><div id="canvasWrap"><canvas id="cv"></canvas></div>
       <div class="side"><canvas id="mini" width="150" height="300"></canvas>
@@ -168,6 +174,7 @@ async function openMatch(id) {
   loadMarkFrame();
   G = null; handles = []; sel = -1;
   await loadFrame();
+  loadVenues();
   if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。", "ok"); }
   else autoDetect();
   showResult(M.done);
@@ -406,6 +413,29 @@ function setMode(corner) {
 $("#mode").onclick = () => {
   setMode(!cornerMode);
   if (cornerMode && !CORN.every(cornerShown)) msg("有角離畫面太遠（或在鏡頭後面），先用畫面內的交叉點。", "err");
+};
+// ---- venues: calibrate an empty court once, apply it to every match filmed from that spot
+async function loadVenues(pick) {
+  const v = await api("/api/venues");
+  $("#venueSel").innerHTML = v.length ? v.map(n => `<option>${n.replace(/</g, "&lt;")}</option>`).join("")
+                                      : '<option value="">（還沒有存過的場地）</option>';
+  if (pick) $("#venueSel").value = pick;
+}
+$("#venueSave").onclick = async () => {
+  const name = $("#venueName").value.trim();
+  if (!G) return msg("先校正好球場，再存成場地。", "err");
+  if (!name) return msg("請先輸入場地名稱。", "err");
+  try { await api("/api/venue/save", {id:M.id, name, corners:corners()}); await loadVenues(name);
+        msg(`已存成場地「${name}」。之後在同一個位置拍的影片，選這個場地按「套用場地」即可。`, "ok"); }
+  catch (e) { msg(e.message, "err"); }
+};
+$("#venueApply").onclick = async () => {
+  const name = $("#venueSel").value;
+  if (!name) return msg("還沒有存過的場地：先用空場影片校正，再按「存成場地」。", "err");
+  msg(`對齊場地「${name}」中…`);
+  try { const j = await api("/api/venue/apply", {id:M.id, name}); setCorners(j.corners);
+        msg(`已套用場地「${name}」（對上 ${j.inliers} 個特徵點，白線吻合 ${(j.on_line * 100).toFixed(0)}%）。請看一下黃線，沒問題就按「儲存校正」。`, "ok"); }
+  catch (e) { msg(e.message, "err"); }
 };
 function calibOk(j) {
   // Your points win. The only objection is geometric: no phone behind the near baseline could

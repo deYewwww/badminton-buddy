@@ -34,6 +34,12 @@ Fixed-camera doubles video -> game-style HUD video (Chinese UI). Read README.md 
   on ONE broadcast singles rally (3 versions) -> re-check on real doubles phone footage.
 - TrackNet on CoreML when models/tracknetv3/TrackNet.mlpackage exists (`hud export-coreml`, Mac);
   vouched for against PyTorch per video. YOLO CoreML export currently fails upstream.
+- Venues (hud/venue.py, data/venues/): calibrate an empty-court clip once, save; a match from the
+  same spot aligns to it (ORB homography -> court.snap -> plausibility). On the user's panning
+  portrait clip it aligned 4/4 camera positions (~900 inliers, 0.3 s) where auto-detect got 2/4.
+  The same alignment per segment is the way to support panning/cut videos (not built yet).
+- Portrait clips: TrackNet gets a 16:9 window (shuttle.window), not the squeezed frame.
+- User's own footage (2026-10-26): phone ~0.7 m high, portrait 0.5x, gimbal panning, edited cuts.
 - The analysis assumes ONE fixed camera for the whole video; panning/zooming clips break it.
 - Shuttle (TrackNetV3) loses the shuttle against dark, crowded backgrounds -> rallies cut short.
 - Oblique test clip: 3/3 rallies found + 2 false ones (pick-ups), hitter side 7/7.

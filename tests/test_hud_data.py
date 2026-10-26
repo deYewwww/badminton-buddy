@@ -79,6 +79,32 @@ def test_check_flags_squeezed_calibration():
     assert not calib_fit(img, bad)[1]
 
 
+def test_venue_align_after_camera_moves():
+    """Venue calibrated on one frame; the match is filmed after the phone was turned ~3 degrees
+    and zoomed a little (any pure rotation/zoom is a homography of the whole image). Aligned
+    corners must land on the true ones; an unrelated scene must be refused."""
+    from hud import venue
+    proj = synth()
+    rng = np.random.default_rng(0)
+    img = cv2.resize(rng.integers(40, 200, (54, 96, 3), dtype=np.uint8), (1920, 1080), interpolation=cv2.INTER_NEAREST)
+    img[540:] = (60, 140, 40)                                   # textured hall above, plain floor below
+    for a, b in LINES:
+        cv2.line(img, tuple(proj(a).astype(int)), tuple(proj(b).astype(int)), (255, 255, 255), 5)
+    corners = np.array([proj(c) for c in [(0, 0), (6.1, 0), (6.1, 13.4), (0, 13.4)]])
+    th = np.radians(3)
+    A = np.array([[1.04 * np.cos(th), -1.04 * np.sin(th), 40], [1.04 * np.sin(th), 1.04 * np.cos(th), -60], [0, 0, 1]])
+    moved = cv2.warpPerspective(img, A, (1920, 1080))
+    truth = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), A).reshape(-1, 2)
+    got, rep = venue.align(img, corners, moved)
+    assert got is not None, rep
+    probe = np.array([proj((x, y)) for x in (0.5, 3, 5.5) for y in (1, 4, 6, 9, 12)])
+    probe = cv2.perspectiveTransform(probe.reshape(-1, 1, 2), A).reshape(-1, 2)
+    err = np.abs(to_court(homography(got), probe) - to_court(homography(truth), probe)).max()
+    assert err < 0.1, (err, rep)
+    other = cv2.resize(rng.integers(0, 255, (60, 80, 3), dtype=np.uint8), (1920, 1080))
+    assert venue.align(img, corners, other)[0] is None
+
+
 def test_placement():
     assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
     assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court

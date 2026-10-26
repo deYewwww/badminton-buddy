@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from hud import court, pipeline
+from hud import court, pipeline, venue
 
 ROOT = Path(__file__).resolve().parents[1]
 UPLOADS, OUT = ROOT / "data" / "uploads", ROOT / "out"
@@ -183,6 +183,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 return self._file(STATIC / "index.html", "text/html; charset=utf-8")
+            if u.path == "/api/venues":
+                return self._json(venue.names())
             if u.path == "/api/matches":
                 return self._json(matches())
             if u.path == "/api/match":
@@ -252,6 +254,17 @@ class Handler(BaseHTTPRequestHandler):
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
                 corners, frac = court.snap(f, np.float64(b["corners"]))
                 return self._json(dict(corners=np.round(corners, 1).tolist(), on_line=round(frac, 2)))
+            if u.path == "/api/venue/save":  # this match's calibration + background, reusable
+                corners = b.get("corners") or json.loads(pipeline.paths(match_dir(mid))["calib"].read_text())["corners"]
+                court.homography(np.float64(corners))  # raises on a degenerate quad
+                venue.save(b["name"], bg_frame(mid), corners)
+                return self._json({"ok": True, "venues": venue.names()})
+            if u.path == "/api/venue/apply":  # align a saved venue onto this match
+                ref, rc = venue.load(b["name"])
+                corners, rep = venue.align(ref, rc, bg_frame(mid))
+                if corners is None:
+                    return self._json({"error": rep.get("error", "對不起來"), **rep}, 422)
+                return self._json(dict(rep, corners=np.round(corners, 1).tolist()))
             if u.path == "/api/calib/save":
                 v = video_of(mid)
                 i = info(v)
