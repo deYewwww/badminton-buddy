@@ -87,6 +87,17 @@ def test_landing_predicted_from_lost_flight():
     assert est["xy"][1] > NET_Y and 0 <= est["xy"][0] <= COURT_W and est["xy"][1] <= COURT_L + 1
 
 
+def test_landing_settles_despite_tracker_wobble():
+    from hud.hits import landed_at
+    rng = np.random.default_rng(0)
+    fall = np.c_[np.full(10, 590.0), np.linspace(1000, 1180, 10)]
+    lying = np.array([590.0, 1180.0]) + rng.uniform(-4, 4, (12, 2))  # 720p TrackNet wobble
+    p = np.r_[fall, lying]
+    p[14] = np.nan                                                    # and a missed frame
+    assert landed_at(p, 0, len(p), still_px=8, still_n=9) in (9, 10)  # the fall reaches 1180 at frame 9
+    assert landed_at(p, 0, len(p), still_px=3, still_n=9) == len(p)  # the old 3 px never settled
+
+
 def test_work_files_default_to_original(tmp=None):
     import tempfile
     from pathlib import Path
