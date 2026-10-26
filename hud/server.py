@@ -114,7 +114,7 @@ def rallies(mid):
         return []
     r = pd.read_parquet(p["rallies"])
     cols = ["rally_id", "start_ts", "duration_s", "shot_count", "point_team_final", "point_source",
-            "score_us", "score_opp", "winning_label"]
+            "score_us", "score_opp", "winning_label", "manual"]
     r = r[[c for c in cols if c in r]]
     return json.loads(r.to_json(orient="records", force_ascii=False))
 
@@ -127,6 +127,18 @@ def set_winner(mid, rally_id, team):
     if team in ("us", "opp", "none"):  # none: not a real rally, no point
         fx = pd.concat([fx, pd.DataFrame([dict(rally_id=int(rally_id), point_team=team)])])
     fx.to_csv(f, index=False)
+
+
+def manual_point(mid, t, team):
+    """Add a point at video time t (s) for a rally the analysis missed, or remove the one at t
+    (team='remove'). Stored in manual_points.csv; takes effect on the next rallies rerun."""
+    f = pipeline.paths(match_dir(mid))["manual"]
+    mp = pd.read_csv(f) if f.exists() else pd.DataFrame(columns=["t", "point_team"])
+    mp = mp[(mp.t - float(t)).abs() > 0.05]
+    if team in ("us", "opp"):
+        mp = pd.concat([mp, pd.DataFrame([dict(t=round(float(t), 2), point_team=team)])])
+    mp.sort_values("t").to_csv(f, index=False)
+    return len(mp)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -307,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/winner":
                 set_winner(mid, b["rally_id"], b["team"])
                 return self._json({"ok": True})
+            if u.path == "/api/point":  # {t, team: us/opp/remove}
+                return self._json({"ok": True, "n": manual_point(mid, b["t"], b["team"])})
             self._json({"error": "not found"}, 404)
         except Exception as e:
             traceback.print_exc()

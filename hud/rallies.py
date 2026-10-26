@@ -101,6 +101,25 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     if shuttle is not None and "inpainted" in shuttle:
         real = (shuttle.visible & ~shuttle.inpainted & ~shuttle.interpolated).to_numpy()
     quiet = max(1, round(r["silence_s"] * fps))
+    # everyone standing still (>= 3 players tracked, all slower than still_mps) for still_s: play
+    # has stopped, whatever the shuttle tracker says (it follows a shuttle in a hand, bounced
+    # around, or on the next court). On ACE every such stretch was a serve being set up; without
+    # this, three rallies became one 30 s "rally" and two points vanished.
+    still = None
+    if players is not None and len(players) and "still_s" in r:
+        from hud.players import speeds
+        n = int(max(players.frame.max(), shots.frame.max())) + 1
+        v = speeds(players, np.arange(n) / fps)
+        tracked = np.isfinite(v).sum(0)
+        with np.errstate(invalid="ignore"):
+            still = (tracked >= 3) & (np.nanmax(np.where(np.isfinite(v), v, -1.0), 0) < r["still_mps"])
+    still_n = max(1, round(r.get("still_s", 1.0) * fps))
+
+    def still_between(a, b):
+        if still is None or b <= a:
+            return False
+        seg = still[a:b]
+        return pd.Series(seg).groupby((~seg).cumsum()).sum().max() >= still_n
     flight_gap = max(1, round(r["flight_gap_s"] * fps))
 
     def silent_between(a, b):
@@ -115,7 +134,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
         if s.timestamp < dead_until and not cut:
             continue
         if (prev is None or cut or s.timestamp - prev.timestamp > r["max_gap_s"] or prev.landing_kind in ENDS
-                or silent_between(int(prev.frame), int(s.frame))):
+                or silent_between(int(prev.frame), int(s.frame)) or still_between(int(prev.frame), int(s.frame))):
             rid += 1
         keep.append(k)
         rally_ids.append(rid)
@@ -155,13 +174,18 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     for rid, g in shots.groupby("rally_id"):
         last = g.iloc[-1]
         kind = last.landing_kind
-        sd = float(getattr(last, "landing_sd", np.nan)) if kind == "predicted" else 0.0
-        ended = kind == "floor" or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
+        sd = float(getattr(last, "landing_sd", np.nan))
+        sd = sd if np.isfinite(sd) else 0.0
+        # seen on the floor: it landed (the rally is over) but in/out is called only when it lies
+        # clear of the lines; a predicted landing must also be clear of them to count at all
+        landed = kind == "floor"
+        ended = (landed and decisive(last.landing_x, last.landing_y, last.team, sd, r.get("floor_sure_sd", 1.5))) \
+            or (kind == "predicted" and decisive(last.landing_x, last.landing_y, last.team, sd, sure))
         inside = ended and in_target(last.landing_x, last.landing_y, last.team)
         other = "opp" if last.team == "us" else "us"
         point = (last.team if inside else other) if ended else None
         lean = None  # not decided: which way the evidence leans (score.apply uses it as the guess)
-        if not ended and kind == "predicted" and np.isfinite(last.landing_x) and np.isfinite(sd):
+        if not ended and kind == "predicted" and np.isfinite(last.landing_x) and sd > 0:
             # the fitted flight came down in the hitter's own half (into the net) or clearly out:
             # the point goes the other way; in the opponents' half: the hitter's
             m = target_margin(last.landing_x, last.landing_y, last.team)
@@ -183,7 +207,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
             end_frame = min(end_frame, int(nxt_cut[0]) - 1)
         rows.append(dict(rally_id=rid, start_frame=int(g.frame.iat[0]), end_frame=end_frame,
                          start_ts=g.timestamp.iat[0], shot_count=len(g),
-                         last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=ended,
+                         last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=bool(landed or ended),
                          landing_x=last.landing_x if ended else np.nan, landing_y=last.landing_y if ended else np.nan,
                          landing_in=inside if ended else None, point_team=point, point_lean=lean,
                          winning_placement=last.placement if inside else None,
@@ -236,12 +260,38 @@ def _fps(shots):
     return (d.frame.iat[-1] - d.frame.iat[0]) / (d.timestamp.iat[-1] - d.timestamp.iat[0])
 
 
+MANUAL_ID = 1000  # manual points get rally ids from here: the detected rallies keep theirs (and their fixes)
+
+
+def add_manual(rallies, manual, fps):
+    """Points the user added at a time (the analysis missed that rally): one-frame pseudo
+    rallies, rally_id MANUAL_ID + k, point_source "manual" in score.apply."""
+    if manual is None or not len(manual):
+        return rallies
+    rows = []
+    for k, m in enumerate(manual.sort_values("t").itertuples()):
+        f = int(round(float(m.t) * fps))
+        rows.append(dict(rally_id=MANUAL_ID + k, start_frame=f, end_frame=f, start_ts=float(m.t), end_ts=float(m.t),
+                         duration_s=0.0, shot_count=0, ended_on_floor=False, landing_x=np.nan, landing_y=np.nan,
+                         landing_in=None, point_team=m.point_team, winning_label="", manual=True))
+    out = pd.concat([rallies, pd.DataFrame(rows)], ignore_index=True) if len(rallies) else pd.DataFrame(rows)
+    out["manual"] = out.get("manual", False)
+    out["manual"] = out.manual.astype("boolean").fillna(False).astype(bool)
+    return out.sort_values("start_ts").reset_index(drop=True)
+
+
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
-        point_fixes=None, cuts=()):
+        point_fixes=None, cuts=(), manual_points=None):
     from hud import score
     cfg = config.load(cfg_path)
     shuttle = pd.read_parquet(shuttle_path) if shuttle_path else None
     shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle, cuts)
+    manual = pd.read_csv(manual_points) if manual_points and Path(manual_points).exists() else None
+    if manual is not None and len(manual):
+        fps = _fps(shots) if len(shots) else 30.0
+        if shuttle is not None and len(shuttle) > 1:
+            fps = 1 / np.median(np.diff(shuttle.timestamp))
+        rallies = add_manual(rallies, manual, fps)
     if len(rallies):
         fixes = pd.read_csv(point_fixes) if point_fixes and Path(point_fixes).exists() else None
         rallies = score.apply(rallies, cfg, fixes)

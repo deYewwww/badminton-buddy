@@ -71,6 +71,7 @@ SUPPORT_S, SUPPORT_MIN = 0.17, 0.3  # around a hit, >= 30% of frames must be rea
 MAX_KMH = 450
 MISSED_HIT_S = 2.0    # same side hits again within this: not a landing, a hit was missed
 DOUBLE_S = 0.6        # ... but within this, the same stroke seen twice (see detect)
+FLOOR_PX = 5          # at 1080p: how far a floor landing's pixel may be off (calibration, stabilisation, centre)
 LAND_JUMP = 0.12      # x pixel scale: the last step into a landing spot is at most this long
 STILL_PX = 12         # at 1080p: a shuttle lying on the floor stays within this of its median (TrackNet's
                       # centre wobbles 5-7 px at 720p; 3 px never let the ACE clip's floor landings settle)
@@ -508,6 +509,11 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
             if settled is not None:
                 land, kind, end = tuple(g), "floor", settled  # seen lying on the floor
                 end3 = np.array([g[0], g[1], 0.0])
+                # how far off that floor point may be: FLOOR_PX of pixel error (calibration,
+                # stabilisation, TrackNet's centre) through the homography at that pixel. From a
+                # 0.7 m phone that is ~0.7 m near the net, so close calls stay undecided
+                from hud.smooth import foot_cov
+                land_sd = float(np.sqrt(np.linalg.eigvalsh(foot_cov(H, [p[settled]], [FLOOR_PX * img_h / 1080])[0]).max()))
             elif last_seen is not None and not soon:  # lost in the air: carry the fitted flight to the floor
                 pts = [j for j in range(i + 1, last_seen + 1) if real[j]]
                 est = landing.predict(cam, c0, t[pts] - t[i], p[pts], fps, img_h) if len(pts) >= 5 else None

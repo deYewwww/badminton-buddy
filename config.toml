@@ -12,7 +12,12 @@ max_gap_s = 3.0          # two hits further apart than this belong to different 
 silence_s = 1.0          # no real shuttle sighting this long = play has stopped
 flight_gap_s = 0.25      # rally ends where the last shot's track breaks off for this long
 max_flight_s = 1.5       # ... and no later than this after the last hit (a high clear's flight)
+floor_sure_sd = 1.5      # a landing SEEN on the floor calls in/out only this many sd (hits.FLOOR_PX) clear of
+                         # the lines: from a 0.7 m phone one pixel is ~0.2 m near the net (ACE: a call 0.9 m
+                         # past the net was wrong)
 landing_sure_sd = 1.0    # a predicted landing (shuttle lost in the air) decides the point only this many sd from a line
+still_s = 1.0            # everyone (>= 3 tracked) slower than still_mps this long: play has stopped
+still_mps = 1.0          # (on ACE every such stretch was a serve being set up)
 min_shots = 2            # rallies with fewer hits are dropped as noise
 pickup_max_shots = 3     # a rally this short with no shot faster than pickup_max_kmh and no player
 pickup_max_kmh = 70      # faster than pickup_max_mps is a toss-back, not play (initial shot speed;
@@ -41,6 +46,10 @@ games_opp = 0
 us = 0
 opp = 0
 first_server = ""        # "us" / "opp" if known; afterwards the rally winner serves
+guess_kill = ["smash"]   # ... except a rally ending on one of these: the hitter won it (a kill)
+guess = "last_hitter_loses"  # no landing seen: who gets the point. On the user's ACE run the side that hit
+                         # last LOST 6 of 8 rallies (errors into the net / out, and finishing kills too fast
+                         # to be detected); "last_hitter_wins" is the other option
 target = 21
 cap = 30
 games_to_win = 2

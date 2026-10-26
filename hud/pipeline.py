@@ -17,7 +17,8 @@ def paths(out_dir):
     o = Path(out_dir)
     return {k: o / v for k, v in dict(
         calib="calib.json", players="players.parquet", shuttle="shuttle.parquet", hits="hits.parquet",
-        shots="shots.parquet", rallies="rallies.parquet", fixes="point_fixes.csv", names="names.json",
+        shots="shots.parquet", rallies="rallies.parquet", fixes="point_fixes.csv", manual="manual_points.csv",
+        names="names.json",
         hud="hud.mp4", timing="timing.json", check="check.json", marks="marks.json",
         check_png="check.png", stab="stab.mp4", stab_calib="calib_stab.json", stab_marks="marks_stab.json").items()}
 
@@ -161,7 +162,7 @@ def analyse(video, out_dir, progress=print, start="players"):
         progress(0.75, "切分回合、計分…")
         from hud.stabilize import cuts_of
         rallies.run(p["hits"], p["players"], p["shots"], p["rallies"], shuttle_path=p["shuttle"],
-                    point_fixes=p["fixes"], cuts=cuts_of(wv))
+                    point_fixes=p["fixes"], cuts=cuts_of(wv), manual_points=p["manual"])
         lap("rallies")
     if "hud" in todo:
         from hud import render

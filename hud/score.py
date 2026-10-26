@@ -1,11 +1,14 @@
 """Match score from rallies: rally-point scoring to 21, win by 2, capped at 30, best of three.
 
 Who won each rally, first that applies:
+  0. manual_points CSV (t,point_team): a point the user added at a time, for a rally the
+     analysis missed (rallies.add_manual)
   1. point_fixes CSV (rally_id,point_team with us/opp, or 'none' for a let): the human word
   2. rallies.point_team: the shuttle was seen landing and in/out was judged (an estimate:
      line calls carry the calibration error), or its fitted flight fell short of the net
-  3. a guess ("guess"): which way the last flight's predicted landing leans, else the side
-     that hit last. The HUD marks these as 推測 and the editor's table can fix them
+  3. a guess ("guess"): which way the last flight's predicted landing leans, else against the
+     side that hit last ([score] guess: on the user's ACE run the last hitter lost 6 of 8). The
+     HUD marks these as 推測 and the editor's table can fix them
   4. otherwise nobody: the score doesn't move and the rally is flagged for review
 The rally winner serves next. Start-of-video score comes from config [score], for videos
 that begin mid-match.
@@ -35,8 +38,11 @@ def apply(rallies, cfg, fixes=None):
     us, opp, g_us, g_opp = s["us"], s["opp"], s["games_us"], s["games_opp"]
     server = s.get("first_server") or None
     rows = []
-    for r in rallies.sort_values("rally_id").itertuples():
-        if r.rally_id in over:
+    order = "start_ts" if "start_ts" in rallies else "rally_id"  # manual points sit between rallies in time
+    for r in rallies.sort_values(order).itertuples():
+        if getattr(r, "manual", False) is True:
+            team, src = r.point_team, "manual"
+        elif r.rally_id in over:
             team, src = (None if over[r.rally_id] == "none" else over[r.rally_id]), "fixed"
         elif isinstance(r.point_team, str) and r.point_team in TEAMS:
             team, src = r.point_team, "landing"
@@ -44,8 +50,11 @@ def apply(rallies, cfg, fixes=None):
             # the last flight's predicted landing, not certain enough to call: still the best guess
             team, src = r.point_lean, "guess"
         elif isinstance(getattr(r, "last_hitter", None), str):
-            # landing not seen: guess the side that hit last won it (fix it in the editor if not)
-            team, src = ("us" if r.last_hitter in ("P1", "P2") else "opp"), "guess"
+            # landing not seen: by default the side that hit last lost it ([score] guess; fix in the editor)
+            hitter = "us" if r.last_hitter in ("P1", "P2") else "opp"
+            wins = (s.get("guess", "last_hitter_loses") == "last_hitter_wins"
+                    or getattr(r, "last_shot_type", None) in s.get("guess_kill", []))
+            team, src = (hitter if wins else ("opp" if hitter == "us" else "us")), "guess"
         else:
             team, src = None, "unknown"
         won = None
@@ -59,7 +68,7 @@ def apply(rallies, cfg, fixes=None):
                          game_no=g_us + g_opp + 1, server=server, game_won=won))
         if won:  # next game from 0-0; the winner serves first
             g_us, g_opp, us, opp = g_us + (won == "us"), g_opp + (won == "opp"), 0, 0
-    out = rallies.sort_values("rally_id").reset_index(drop=True)
+    out = rallies.sort_values(order).reset_index(drop=True)
     return pd.concat([out, pd.DataFrame(rows)], axis=1)
 
 
