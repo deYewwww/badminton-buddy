@@ -157,7 +157,13 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   (19/34, the serve is usually missed); player motion (walking between points ~ short rallies);
   racket sound (neighbouring courts: 5 vs 3 onsets per 4 s, near/far hits equally loud).
   The editor's Quick review (stop after each rally: arrows / 1-2 for missed points) covers it.
-- UI and HUD are English (user's choice, after the Thai/Korean reference videos). The shuttle is
-  drawn as a reticle + 0.5 s tail; render.fill_flights bridges <= 0.8 s gaps between a hit's contact,
+- UI and HUD: back to Traditional Chinese (user tried English, did not like it). Foot rings: one thin
+  solid ring + two turning arcs (a glow / fill / white highlight was "too bright, ugly"). The shuttle is
+  drawn as a reticle + 0.5 s tail, in bursts of hits (render.hit_groups), not only inside detected
+  rallies (a 2-hit exchange at 2:42 the rally rules dropped was never drawn); render.fill_flights bridges <= 0.8 s gaps between a hit's contact,
   the real sightings and the next contact (PCHIP), only on flights with >= 2 sightings.
+- TrackNet misses on IMG_9840 (2026-10-28): in play it sees the shuttle in 58 % of frames (29 % over the
+  whole clip). 12 sampled short gaps: 4 hidden behind a near player, 4 lost against the ceiling lights /
+  YONEX banner (visible to a person), 3 already on the floor. Long gaps (> 10 frames) often start and end
+  on sightings that sit on players' shirts/shorts: TrackNet locked onto clothing, not the shuttle.
 

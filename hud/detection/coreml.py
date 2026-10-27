@@ -15,6 +15,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 TRACKNET_ML = ROOT / "models" / "tracknetv3" / "TrackNet.mlpackage"
+TRACKNET_FT_ML = ROOT / "models" / "tracknetv3" / "TrackNet_ft.mlpackage"  # the fine-tuned net's copy (finetune.py)
 YOLO_ML = ROOT / "models" / "yolo11n-pose.mlpackage"
 H, W = 288, 512
 
@@ -30,14 +31,15 @@ def export(imgsz=960):
     m = ct.convert(traced, inputs=[ct.TensorType(name="x", shape=x.shape)], outputs=[ct.TensorType(name="heat")],
                    compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS13,
                    convert_to="mlprogram")
-    m.save(str(TRACKNET_ML))
-    print(f"Wrote {TRACKNET_ML}")
+    dst = TRACKNET_FT_ML if (shuttle.CKPT_DIR / "TrackNet_ft.pt").exists() else TRACKNET_ML
+    m.save(str(dst))
+    print(f"Wrote {dst}")
     import numpy
     if tuple(int(x) for x in numpy.__version__.split(".")[:2]) > (2, 3):
         # Ultralytics' CoreML export needs numpy <= 2.3.5: with 2.4 its attention block fails to
         # convert ("only 0-dimensional arrays can be converted to Python scalars")
-        print(f"YOLO's CoreML export needs numpy <= 2.3.5 (have {numpy.__version__}): skipped, player detection "
-              f"stays on PyTorch. To export YOLO run:\n  uv run --with numpy==2.3.5 hud export-coreml")
+        print(f"YOLO 的 CoreML 匯出需要 numpy <= 2.3.5（目前 {numpy.__version__}），這次先跳過，"
+              f"球員偵測繼續用 PyTorch。要匯出 YOLO 請改用：\n  uv run --with numpy==2.3.5 hud export-coreml")
         return
     from ultralytics import YOLO
 
@@ -54,11 +56,13 @@ def export(imgsz=960):
 def tracknet():
     """-> callable (batch, C, 288, 512) float32 in [0, 1] -> heat (batch, L, 288, 512), or None
     when not on macOS, not exported, or coremltools is missing."""
-    if sys.platform != "darwin" or not TRACKNET_ML.exists():
+    from hud.detection.shuttle import CKPT_DIR
+    path = TRACKNET_FT_ML if (CKPT_DIR / "TrackNet_ft.pt").exists() else TRACKNET_ML  # never the stale copy
+    if sys.platform != "darwin" or not path.exists():
         return None
     try:
         import coremltools as ct
-        m = ct.models.MLModel(str(TRACKNET_ML), compute_units=ct.ComputeUnit.ALL)
+        m = ct.models.MLModel(str(path), compute_units=ct.ComputeUnit.ALL)
     except Exception as e:  # missing package, unsupported macOS: PyTorch it is
         print(f"CoreML TrackNet unavailable ({e}); using PyTorch")
         return None

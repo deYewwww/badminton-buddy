@@ -9,3 +9,5 @@ models/tracknetv3/TrackNet_best.pt
 *.tmp
 # CoreML copies, made on the Mac by `hud export-coreml`
 *.mlpackage/
+# fine-tuned on the user's own labelled frames (hud finetune)
+models/tracknetv3/TrackNet_ft.pt

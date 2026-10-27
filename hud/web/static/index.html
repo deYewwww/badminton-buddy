@@ -1,13 +1,13 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Badminton HUD Editor</title>
+<title>羽球 HUD 編輯器</title>
 <style>
   :root { --bg:#0d1418; --panel:#16222a; --edge:#2b3d48; --text:#e8eef2; --dim:#8da2ae; --accent:#36c8f0; --good:#5be0a0; --bad:#ff6b6b; }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system, "Helvetica Neue", "PingFang TC", sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system, "PingFang TC", "Heiti TC", sans-serif; }
   main { max-width:1100px; margin:0 auto; padding:16px; }
   h1 { font-size:22px; margin:8px 0 16px; letter-spacing:.5px; }
   h1 small { color:var(--dim); font-weight:normal; font-size:14px; margin-left:8px; }
@@ -51,73 +51,82 @@
 </head>
 <body>
 <main>
-  <h1>Badminton HUD Editor <small>Upload → Calibrate court → Names → Analyse → Fix the score</small></h1>
+  <h1>羽球 HUD 編輯器 <small>上傳 → 校正球場 → 名字 → 分析 → 修正比分</small></h1>
 
   <section id="s1">
-    <h2>① Video <span>Phone on a stand, straight behind the court or 45° behind</span></h2>
-    <div id="drop">Drop a video here, or click to choose a file (.mp4 / .mov)<input id="file" type="file" accept="video/*" hidden></div>
+    <h2>① 影片 <span>手機固定拍攝，正後方或後方 45° 都可以</span></h2>
+    <div id="drop">把影片拖到這裡，或點一下選擇檔案（.mp4 / .mov）<input id="file" type="file" accept="video/*" hidden></div>
     <div class="row"><progress id="upProg" value="0" max="1" hidden></progress></div>
     <div id="list" class="row"></div>
   </section>
 
   <section id="s2" class="off">
-    <h2>② Calibrate court <span>Drag points 1–4 until the yellow lines sit on the white court lines</span></h2>
+    <h2>② 校正球場 <span>拖動 1–4 號點，讓黃線對齊地上的白線</span></h2>
     <div class="row">
-      <button id="auto">Auto-detect</button>
-      <button id="snap">Snap to lines</button>
-      <button id="reset">Reset</button>
-      <button id="mode" title="Corners: drag the 4 court corners; a corner outside the picture goes into the grey area. Intersections: use 4 line crossings visible in the picture instead">Points: corners</button>
-      <span class="hint">Frame:</span><input id="t" type="range" min="-1" max="1" step="0.1" value="-1"><span id="tLabel" class="hint">Background</span>
-      <button id="save" class="primary">Save calibration</button>
+      <button id="auto">自動偵測</button>
+      <button id="snap">貼齊白線</button>
+      <button id="reset">重設</button>
+      <button id="mode" title="四個角：直接拖球場四個角，角在畫面外就拖到灰色區域。交叉點：改用畫面裡看得到的四個白線交叉點">控制點：四個角</button>
+      <span class="hint">畫面：</span><input id="t" type="range" min="-1" max="1" step="0.1" value="-1"><span id="tLabel" class="hint">背景</span>
+      <button id="save" class="primary">儲存校正</button>
     </div>
     <div class="row">
-      <span class="hint">Venue:</span><select id="venueSel"><option value="">(no saved venues yet)</option></select>
-      <button id="venueApply">Apply venue</button>
-      <input id="venueName" type="text" maxlength="40" placeholder="Venue name, e.g. DT court 5 rear right">
-      <button id="venueSave">Save as venue</button>
+      <span class="hint">場地：</span><select id="venueSel"><option value="">（還沒有存過的場地）</option></select>
+      <button id="venueApply">套用場地</button>
+      <input id="venueName" type="text" maxlength="40" placeholder="場地名稱，例如 DT 第5場 右後方">
+      <button id="venueSave">存成場地</button>
     </div>
-    <div class="row hint" id="calMsg">The court is detected automatically once a video is chosen. Points 1–4 are the court corners: drag a corner that is outside the picture into the grey area so the yellow lines extend onto the white lines. After selecting a point, nudge it with the arrow keys (Shift = 10 px), or click another small yellow dot to use that crossing instead.</div>
+    <div class="row hint" id="calMsg">選好影片後會自動偵測球場。1–4 號點是球場的四個角：角在畫面外就拖到灰色區域，讓黃線延伸出去對齊白線。選一個點後可用方向鍵微調（Shift = 10 px），或點一下別的小黃點，改用那個交叉點。</div>
     <div class="calib"><div id="canvasWrap"><canvas id="cv"></canvas></div>
       <div class="side"><canvas id="mini" width="150" height="300"></canvas>
-        <div class="hint">After selecting a numbered point, click a crossing here to say which court point it is</div></div></div>
+        <div class="hint">選一個號碼點後，在這裡點交叉點：指定它是球場上的哪一點</div></div></div>
   </section>
 
   <section id="s3" class="off">
-    <h2>③ Players <span>Pick a player and click between their feet; where the wrong person is followed, go to that time and click again</span></h2>
+    <h2>③ 球員 <span>選一位球員，在畫面上點他兩腳中間；哪裡認錯人，就到那個時間再點一次</span></h2>
     <div class="names" id="names"></div>
-    <div class="row"><span class="hint">Frame:</span><input id="mt" type="range" min="0" max="1" step="0.1" value="0"><span id="mtLabel" class="hint">0:00.0</span></div>
-    <div class="row hint" id="markMsg">Best: before the first rally, click each of the 4 players once (it moves on to the next player by itself). The near side (camera side) is us, the far side the opponents.</div>
+    <div class="row"><span class="hint">畫面：</span><input id="mt" type="range" min="0" max="1" step="0.1" value="0"><span id="mtLabel" class="hint">0:00.0</span></div>
+    <div class="row hint" id="markMsg">建議在第一個回合開始前，把 4 位球員各點一次（點完一位會自動換下一位）。近端（靠鏡頭）是我隊，遠端是對手。</div>
     <div id="markWrap"><canvas id="mk"></canvas></div>
     <div id="markList" class="row"></div>
   </section>
 
   <section id="s4" class="off">
-    <h2>④ Analyse</h2>
-    <div class="row"><button id="run" class="primary">Start analysis</button><span id="runMsg" class="hint"></span></div>
+    <h2>④ 分析</h2>
+    <div class="row"><button id="run" class="primary">開始分析</button><span id="runMsg" class="hint"></span></div>
     <progress id="runProg" value="0" max="1"></progress>
   </section>
 
   <section id="s5" class="off">
-    <h2>⑤ Result <span>Who won each point is guessed: fix it in the table or with Quick review, then press "Apply fixes"</span></h2>
+    <h2>⑤ 結果 <span>得分方是自動猜的，猜錯就在表格裡改，再按「套用修正」</span></h2>
     <video id="vid" controls playsinline></video>
-    <div class="row"><a id="dl" download="hud.mp4"><button>Download HUD video</button></a>
-      <button id="rerender">Apply fixes and re-render</button></div>
-    <div class="row hint">A point is missing (rally not detected)? Pause the video where that point ended and press:
-      <button id="addUs">Add point: us</button> <button id="addOpp">Add point: opponents</button>
+    <div class="row"><a id="dl" download="hud.mp4"><button>下載 HUD 影片</button></a>
+      <button id="rerender">套用修正並重新輸出</button></div>
+    <div class="row hint">漏掉一分（沒有偵測到那個回合）？把影片停在那一分結束的地方，按：
+      <button id="addUs">補一分：我隊</button> <button id="addOpp">補一分：對手</button>
       <span id="addMsg"></span></div>
-    <div class="row"><button id="review" class="primary">Quick review</button>
-      Speed <select id="revRate"><option>1</option><option selected>1.5</option><option>2</option></select>
-      <span id="revMsg" class="hint">Plays from the start and stops after every detected rally to ask who won it.</span></div>
-    <div id="revKeys" class="row hint" style="display:none"><b>When stopped</b>: ← us　→ opponents　↓ no point　Enter keep the guess　R replay the rally
-      ｜<b>While playing</b>: a point ended but it did not stop (missed) → 1 adds it to us, 2 to the opponents　｜ Backspace undo　Esc finish</div>
-    <table><thead><tr><th>#</th><th>Start</th><th>Length</th><th>Shots</th><th>Point to</th><th>Score</th><th>Landing</th></tr></thead>
+    <div class="row"><button id="review" class="primary">快速檢查得分</button>
+      速度 <select id="revRate"><option>1</option><option selected>1.5</option><option>2</option></select>
+      <span id="revMsg" class="hint">從頭播放，每個偵測到的回合結束時停下來問誰得分。</span></div>
+    <div id="revKeys" class="row hint" style="display:none"><b>停下時</b>：← 我隊　→ 對手　↓ 不算（不是一分）　Enter 用自動的　R 重播這回合
+      ｜<b>播放中</b>：一分結束但沒停下來（漏掉的）→ 按 1 補給我隊、2 補給對手　｜ Backspace 復原上一步　Esc 結束</div>
+    <table><thead><tr><th>#</th><th>開始</th><th>時長</th><th>拍數</th><th>得分方</th><th>比分</th><th>落點</th></tr></thead>
       <tbody id="rallies"></tbody></table>
+  </section>
+  <section id="s6" class="off">
+    <h2>⑥ 標記羽球 <span>訓練羽球追蹤用：標約 300 張，標完在終端機跑 <code>uv run hud finetune out/&lt;影片&gt;</code></span></h2>
+    <div class="row"><button id="lblStart" class="primary">開始標記</button><span id="lblMsg" class="hint"></span></div>
+    <div id="lblKeys" class="row hint" style="display:none">點畫面上羽球的中心（右上角放大鏡幫你對準）。
+      Enter = 黃圈（目前的偵測）是對的　N = 畫面裡沒有在飛的羽球　H = 羽球被擋住／看不清楚　← 上一張　→ 跳過　Esc 結束</div>
+    <div id="lblWrap" style="position:relative; border-radius:8px; overflow:hidden; background:#0a0f12">
+      <canvas id="lbl" style="cursor:crosshair"></canvas>
+      <canvas id="lblZoom" width="260" height="260" style="position:absolute; right:8px; top:8px; width:260px; border:2px solid var(--accent); border-radius:6px; display:none"></canvas></div>
   </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
 const COLORS = {P1:"#36c8f0", P2:"#5be0a0", P3:"#b48cff", P4:"#ffb050"};
-const LABELS = ["near L", "near R", "far R", "far L"];
+const LABELS = ["近左", "近右", "遠右", "遠左"];
 const W_C = 6.10, L_C = 13.40, NET = 6.70;
 const LINES = [];
 for (const x of [0, 0.46, W_C - 0.46, W_C]) LINES.push([[x, 0], [x, L_C]]);
@@ -143,7 +152,7 @@ async function api(path, body) {
 // ---- matches & upload
 async function loadList() {
   const l = await api("/api/matches");
-  $("#list").innerHTML = l.length ? '<span class="hint">Earlier videos:</span>' : "";
+  $("#list").innerHTML = l.length ? '<span class="hint">之前的影片：</span>' : "";
   for (const m of l.slice(0, 12)) {
     const b = document.createElement("button");
     b.textContent = (m.name || m.id) + (m.done ? " ✓" : "");
@@ -187,11 +196,11 @@ async function openMatch(id) {
   // a panning / cut clip: the background median is a blur, so calibrate on one real frame; the
   // analysis stabilises every frame onto it (pipeline.prepare)
   let mv = null;
-  try { msg("Checking whether the camera moves…"); mv = await api("/api/motion?id=" + M.id); } catch (e) {}
-  const moveMsg = mv && mv.moving ? `The camera turns or the clip has cuts (view shifts up to ${(mv.shift * 100).toFixed(0)}%): line up the 4 corners on a clear frame (not the background). Analysis stabilises every frame onto that one; the HUD is still drawn on the original video.` : "";
+  try { msg("檢查鏡頭有沒有移動…"); mv = await api("/api/motion?id=" + M.id); } catch (e) {}
+  const moveMsg = mv && mv.moving ? `偵測到鏡頭有轉動或剪接（畫面最多偏移 ${(mv.shift * 100).toFixed(0)}%）：請在一個清楚的畫面上對齊四個角（不要用背景圖），分析時會自動把每一幀穩定到這個畫面，HUD 仍畫在原始影片上。` : "";
   if (mv && mv.moving && +$("#t").value < 0) { $("#t").value = mv.ref_t; await loadFrame(); }
-  if (M.corners) { setCorners(M.corners); msg("Loaded the earlier calibration." + (moveMsg ? " " + moveMsg : ""), "ok"); }
-  else { await autoDetect(); if (moveMsg) msg(moveMsg + " (auto-detected once already: check the yellow lines)", "ok"); }
+  if (M.corners) { setCorners(M.corners); msg("已載入之前的校正。" + (moveMsg ? " " + moveMsg : ""), "ok"); }
+  else { await autoDetect(); if (moveMsg) msg(moveMsg + "（已先自動偵測一次，請檢查黃線）", "ok"); }
   showResult(M.done);
 }
 
@@ -231,7 +240,7 @@ function layout() {
 window.onresize = layout;
 async function loadFrame() {
   const t = +$("#t").value;
-  $("#tLabel").textContent = t < 0 ? "Background" : fmt(t);
+  $("#tLabel").textContent = t < 0 ? "背景" : fmt(t);
   await new Promise(ok => { img.onload = ok; img.src = `/api/frame?id=${M.id}&t=${t}`; });
   if (!G) fitView();
   layout();
@@ -322,7 +331,7 @@ function drawMini() {
   mctx.setLineDash([4, 3]); mctx.strokeStyle = "#ff8a3d"; mctx.beginPath(); mctx.moveTo(...toM(NETL[0])); mctx.lineTo(...toM(NETL[1])); mctx.stroke(); mctx.setLineDash([]);
   mctx.fillStyle = "#ffe14a";
   for (const c of PTS) { const [x, y] = toM(c); mctx.beginPath(); mctx.arc(x, y, 2.5, 0, 7); mctx.fill(); }
-  mctx.font = "10px sans-serif"; mctx.fillStyle = "#8da2ae"; mctx.fillText("far", 66, 11); mctx.fillText("near (camera)", 40, mini.height - 3);
+  mctx.font = "10px sans-serif"; mctx.fillStyle = "#8da2ae"; mctx.fillText("遠端", 60, 11); mctx.fillText("近端（鏡頭）", 44, mini.height - 3);
   handles.forEach((h, i) => {
     const [x, y] = toM(h.c);
     mctx.beginPath(); mctx.arc(x, y, i === sel ? 9 : 8, 0, 7);
@@ -332,7 +341,7 @@ function drawMini() {
   });
 }
 mini.onclick = e => {
-  if (sel < 0) return msg("First select a numbered point in the picture, then click its crossing on the small map.");
+  if (sel < 0) return msg("先在畫面上點選一個號碼點，再在小圖上點它所在的交叉點。");
   const r = mini.getBoundingClientRect(), p = [(e.clientX - r.left) * mini.width / r.width, (e.clientY - r.top) * mini.height / r.height];
   let c = null, bd = 10;
   for (const q of PTS) { const m = toM(q), d = Math.hypot(m[0] - p[0], m[1] - p[1]); if (d < bd) { bd = d; c = q; } }
@@ -341,7 +350,7 @@ mini.onclick = e => {
   handles[sel].c = c;
   const g = homography(handles.map(h => h.c), handles.map(h => h.p));
   const tri = [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]].map(t => area(t.map(q => handles[q].c)));
-  if (!g || Math.min(...tri) < 0.5) { handles[sel].c = old; return msg("3 of these 4 points lie on one line: pick another crossing.", "err"); }
+  if (!g || Math.min(...tri) < 0.5) { handles[sel].c = old; return msg("這 4 個點有 3 個在同一條線上，請選別的交叉點。", "err"); }
   G = g; draw();
 };
 function seg(a, b) {  // sample along the line, skipping parts behind the camera
@@ -409,47 +418,47 @@ document.onkeydown = e => {
 function msg(t, cls = "") { $("#calMsg").className = "row hint " + cls; $("#calMsg").textContent = t; }
 const defaultCorners = () => [[M.w * .2, M.h * .92], [M.w * .8, M.h * .92], [M.w * .64, M.h * .45], [M.w * .36, M.h * .45]];
 async function autoDetect() {
-  msg("Detecting… (the first time builds a background first, 5–10 s)");
+  msg("自動偵測中…（第一次要先合成背景，約 5–10 秒）");
   try {
     const j = await api("/api/calib/auto", {id:M.id, t:+$("#t").value});
     setCorners(j.corners);
-    msg(`Court found (${(j.on_line * 100).toFixed(0)}% on the white lines). If the yellow lines are off, drag points 1–4 to their crossings.`, j.on_line > 0.6 ? "ok" : "");
+    msg(`偵測到球場（白線吻合 ${(j.on_line * 100).toFixed(0)}%）。黃線沒對齊的話，拖 1–4 號點到它應該在的白線交叉點。`, j.on_line > 0.6 ? "ok" : "");
   } catch (e) {
     setCorners(defaultCorners());
-    msg(e.message + ": drag points 1–4 to their crossings on the white lines", "err");
+    msg(e.message + "：請把 1–4 號點拖到對應的白線交叉點", "err");
   }
 }
 $("#auto").onclick = autoDetect;
 function setMode(corner) {
   cornerMode = corner;
-  $("#mode").textContent = corner ? "Points: corners" : "Points: in-picture crossings";
+  $("#mode").textContent = corner ? "控制點：四個角" : "控制點：畫面內交叉點";
   if (G) { pickHandles(); draw(); }
 }
 $("#mode").onclick = () => {
   setMode(!cornerMode);
-  if (cornerMode && !CORN.every(cornerShown)) msg("A corner is too far outside the picture (or behind the camera): using in-picture crossings.", "err");
+  if (cornerMode && !CORN.every(cornerShown)) msg("有角離畫面太遠（或在鏡頭後面），先用畫面內的交叉點。", "err");
 };
 // ---- venues: calibrate an empty court once, apply it to every match filmed from that spot
 async function loadVenues(pick) {
   const v = await api("/api/venues");
   $("#venueSel").innerHTML = v.length ? v.map(n => `<option>${n.replace(/</g, "&lt;")}</option>`).join("")
-                                      : '<option value="">(no saved venues yet)</option>';
+                                      : '<option value="">（還沒有存過的場地）</option>';
   if (pick) $("#venueSel").value = pick;
 }
 $("#venueSave").onclick = async () => {
   const name = $("#venueName").value.trim();
-  if (!G) return msg("Calibrate the court first, then save it as a venue.", "err");
-  if (!name) return msg("Enter a venue name first.", "err");
+  if (!G) return msg("先校正好球場，再存成場地。", "err");
+  if (!name) return msg("請先輸入場地名稱。", "err");
   try { await api("/api/venue/save", {id:M.id, name, corners:corners()}); await loadVenues(name);
-        msg(`Saved venue "${name}". For later videos filmed from the same spot, pick it and press "Apply venue".`, "ok"); }
+        msg(`已存成場地「${name}」。之後在同一個位置拍的影片，選這個場地按「套用場地」即可。`, "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 $("#venueApply").onclick = async () => {
   const name = $("#venueSel").value;
-  if (!name) return msg("No saved venues yet: calibrate an empty-court clip, then press \"Save as venue\".", "err");
-  msg(`Aligning venue "${name}"…`);
+  if (!name) return msg("還沒有存過的場地：先用空場影片校正，再按「存成場地」。", "err");
+  msg(`對齊場地「${name}」中…`);
   try { const j = await api("/api/venue/apply", {id:M.id, name}); setCorners(j.corners);
-        msg(`Applied venue "${name}" (${j.inliers} features matched, ${(j.on_line * 100).toFixed(0)}% on the white lines). Check the yellow lines, then press "Save calibration".`, "ok"); }
+        msg(`已套用場地「${name}」（對上 ${j.inliers} 個特徵點，白線吻合 ${(j.on_line * 100).toFixed(0)}%）。請看一下黃線，沒問題就按「儲存校正」。`, "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 function calibOk(j) {
@@ -457,19 +466,19 @@ function calibOk(j) {
   // see the court like that (e.g. far corners placed on the wall). The white-line overlap is
   // not used: it relies on the same line finder that fails on footage where auto-detect fails.
   if (j.plausible) return true;
-  msg("These 4 points give no sensible camera position (it should be behind the near baseline, 0.6–8 m high). Usual causes: a far corner put on the wall or the net, "
-      + "or the points in the wrong order (1 near left, 2 near right, 3 far right, 4 far left). If you are sure they are right, you can still analyse.", "err");
+  msg("這 4 個點推算不出合理的相機位置（相機應該在近端底線後方、高 0.6–8 m）。常見原因：遠端的角放到牆上或網子上，"
+      + "或點的順序錯了（1 近左、2 近右、3 遠右、4 遠左）。確定沒錯的話可以照樣分析。", "err");
   return false;
 }
-$("#reset").onclick = () => { setCorners(defaultCorners()); msg("Reset. Drag points 1–4 to their crossings on the white lines."); };
+$("#reset").onclick = () => { setCorners(defaultCorners()); msg("已重設。把 1–4 號點拖到對應的白線交叉點。"); };
 $("#snap").onclick = async () => {
   if (!G) return;
-  msg("Snapping to the lines…");
-  try { const j = await api("/api/calib/snap", {id:M.id, t:+$("#t").value, corners:corners()}); setCorners(j.corners); msg(`Snapped (${(j.on_line * 100).toFixed(0)}% on the white lines).`, "ok"); }
+  msg("貼齊白線中…");
+  try { const j = await api("/api/calib/snap", {id:M.id, t:+$("#t").value, corners:corners()}); setCorners(j.corners); msg(`已貼齊（白線吻合 ${(j.on_line * 100).toFixed(0)}%）。`, "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 $("#save").onclick = async () => {
-  try { const j = await api("/api/calib/save", {id:M.id, t:+$("#t").value, corners:corners()}); calibOk(j) && msg("Calibration saved.", "ok"); }
+  try { const j = await api("/api/calib/save", {id:M.id, t:+$("#t").value, corners:corners()}); calibOk(j) && msg("已儲存校正。", "ok"); }
   catch (e) { msg(e.message, "err"); }
 };
 
@@ -514,10 +523,10 @@ function drawMarks() {
     mkx.font = "bold 14px sans-serif"; mkx.lineWidth = 4; mkx.strokeStyle = "#000";
     mkx.strokeText(M.names[m.pid], x + 12, y - 8); mkx.fillStyle = COLORS[m.pid]; mkx.fillText(M.names[m.pid], x + 12, y - 8);
   }
-  $("#markList").innerHTML = marks.length ? '<span class="hint">Marked:</span>' : "";
+  $("#markList").innerHTML = marks.length ? '<span class="hint">已標記：</span>' : "";
   for (const [i, m] of marks.entries()) {
     const b = document.createElement("button");
-    b.innerHTML = `<span class="dot" style="background:${COLORS[m.pid]}"></span> ${fmt(m.t)} ${M.names[m.pid]} <span title="Delete">✕</span>`;
+    b.innerHTML = `<span class="dot" style="background:${COLORS[m.pid]}"></span> ${fmt(m.t)} ${M.names[m.pid]} <span title="刪除">✕</span>`;
     b.onclick = e => {
       if (e.target.title) { marks.splice(i, 1); saveMarks(); return drawMarks(); }
       $("#mt").value = m.t; loadMarkFrame();
@@ -528,20 +537,20 @@ function drawMarks() {
 const saveMarks = () => api("/api/marks", {id:M.id, marks}).catch(e => markMsg(e.message, "err"));
 function markMsg(t, cls = "") { $("#markMsg").className = "row hint " + cls; $("#markMsg").textContent = t; }
 mk.onclick = e => {
-  if (!G) return markMsg("Calibrate the court in ② first.", "err");
+  if (!G) return markMsg("請先在 ② 校正球場。", "err");
   const r = mk.getBoundingClientRect(), p = [(e.clientX - r.left) / MK, (e.clientY - r.top) / MK];
   const toCourt = homography(corners(), CORN), c = proj(toCourt, p);  // image px -> court m
   const far = c[1] >= NET, wantFar = pick === "P3" || pick === "P4";
   if (c[0] < -2 || c[0] > W_C + 2 || c[1] < -3 || c[1] > L_C + 3)
-    return markMsg("That spot is not near the court. Click the floor between the player's feet; if you did, the calibration in ② is still off.", "err");
+    return markMsg("這個點不在球場附近。要點在球員兩腳中間的地板上；如果明明點對了，代表 ② 的校正還不準。", "err");
   if (far !== wantFar)
-    return markMsg(`${M.names[pick]} is ${wantFar ? "an opponent: on the far side of the net" : "on our team: on the near side of the net"}.`, "err");
+    return markMsg(`${M.names[pick]} 是${wantFar ? "對手，應該在網子另一邊（遠端）" : "我隊，應該在網子這一邊（近端）"}。`, "err");
   const t = +$("#mt").value;
   marks = marks.filter(m => !(m.pid === pick && Math.abs(m.t - t) < 0.3));
   marks.push({t, pid:pick, x:p[0], y:p[1]});
   marks.sort((a, b) => a.t - b.t);
   saveMarks();
-  markMsg(`Marked ${M.names[pick]} (${fmt(t)}). Takes effect on the next "Start analysis".`, "ok");
+  markMsg(`已標記 ${M.names[pick]}（${fmt(t)}）。重新「開始分析」才會生效。`, "ok");
   pick = PIDS[(PIDS.indexOf(pick) + 1) % 4];
   names(M.names); drawMarks();
 };
@@ -551,7 +560,7 @@ async function run(start) {
   try {
     if (start === "players") {
       const j = await api("/api/calib/save", {id:M.id, t:+$("#t").value, corners:corners()});
-      if (!calibOk(j) && !confirm("The 4 points give no sensible camera position (see the red text under calibration). With a wrong calibration the opponents, shots and score come out empty.\nAnalyse anyway?")) return;
+      if (!calibOk(j) && !confirm("4 個點推算不出合理的相機位置（見校正區的紅字）。校正錯的話，對手、拍數、比分都會是空的。\n確定點對了，仍要開始分析嗎？")) return;
     }
     await api("/api/run", {id:M.id, start});
   } catch (e) { return $("#runMsg").textContent = e.message; }
@@ -559,7 +568,7 @@ async function run(start) {
   clearInterval(poll);
   poll = setInterval(async () => {
     const j = await api("/api/status");
-    $("#runProg").value = j.progress; $("#runMsg").textContent = j.error ? "Error: " + j.error : j.msg;
+    $("#runProg").value = j.progress; $("#runMsg").textContent = j.error ? "錯誤：" + j.error : j.msg;
     $("#runMsg").className = "hint" + (j.error || j.msg.includes("⚠") ? " err" : "");
     if (!j.running) {
       clearInterval(poll); $("#run").disabled = $("#rerender").disabled = false;
@@ -572,10 +581,11 @@ $("#rerender").onclick = () => run("rallies");
 for (const [b, team] of [["#addUs", "us"], ["#addOpp", "opp"]]) $(b).onclick = async () => {
   const t = $("#vid").currentTime;
   await api("/api/point", {id:M.id, t, team});
-  $("#addMsg").textContent = `Added a point for ${team === "us" ? "us" : "the opponents"} at ${fmt(t)}. Press "Apply fixes and re-render" to use it.`;
+  $("#addMsg").textContent = `已在 ${fmt(t)} 補一分給${team === "us" ? "我隊" : "對手"}，按「套用修正並重新輸出」生效。`;
 };
 async function showResult(done) {
   $("#s5").classList.toggle("off", !done);
+  $("#s6").classList.toggle("off", !done);
   if (!done) return;
   const src = `/api/hud?id=${M.id}&v=${Date.now()}`;
   $("#vid").src = src; $("#dl").href = src;
@@ -583,16 +593,16 @@ async function showResult(done) {
   const tb = $("#rallies"); tb.innerHTML = "";
   for (const r of R) {
     const tr = document.createElement("tr");
-    const auto = r.point_source === "fixed" ? "" : (r.point_team_final === "us" ? "us" : r.point_team_final === "opp" ? "opponents" : "unknown")
-      + (r.point_source === "guess" ? ", guessed" : r.point_source === "landing" ? ", from landing" : "");
-    tr.innerHTML = `<td>${r.manual ? "＋" : r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} s</td><td>${r.shot_count}</td>
-      <td><select><option value="auto">auto${auto ? " (" + auto + ")" : ""}</option><option value="us">us</option><option value="opp">opponents</option><option value="none">no point</option></select></td>
+    const auto = r.point_source === "fixed" ? "" : (r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知")
+      + (r.point_source === "guess" ? "，推測" : r.point_source === "landing" ? "，看落點" : "");
+    tr.innerHTML = `<td>${r.manual ? "＋" : r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
+      <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">不算</option></select></td>
       <td>${r.score_us ?? ""} : ${r.score_opp ?? ""}</td><td>${r.winning_label || ""}</td>`;
     const s = tr.querySelector("select");
     if (r.manual) {  // a point added by hand: only removable
-      s.outerHTML = `<span>${r.point_team_final === "us" ? "us" : "opponents"} (added by hand)</span> <button class="del">Delete</button>`;
+      s.outerHTML = `<span>${r.point_team_final === "us" ? "我隊" : "對手"}（手動補的）</span> <button class="del">刪除</button>`;
       tr.querySelector(".del").onclick = async () => { await api("/api/point", {id:M.id, t:r.start_ts, team:"remove"});
-        tr.style.opacity = 0.4; $("#addMsg").textContent = "Deleted. Press \"Apply fixes and re-render\" to use it."; };
+        tr.style.opacity = 0.4; $("#addMsg").textContent = "已刪除，按「套用修正並重新輸出」生效。"; };
     } else {
       s.value = r.point_source === "fixed" ? (r.point_team_final || "none") : "auto";
       s.onchange = () => api("/api/winner", {id:M.id, rally_id:r.rally_id, team:s.value});
@@ -605,17 +615,17 @@ async function showResult(done) {
 // points the analysis missed are added with 1 / 2 while it plays. Each answer is saved at once
 // (point_fixes.csv / manual_points.csv), so stopping half way loses nothing.
 const REV = {on:false, list:[], k:0, undo:[], timer:null};
-const TEAM = {us:"us", opp:"opponents", none:"no point"};
+const TEAM = {us:"我隊", opp:"對手", none:"不算"};
 function revMsg(t) { $("#revMsg").textContent = t; }
 function revAsk() {
   const r = REV.list[REV.k], v = $("#vid");
   v.pause(); REV.waiting = true;
-  const auto = TEAM[r.point_team_final] || "unknown";
-  revMsg(`Rally ${REV.k + 1}/${REV.list.length} (${fmt(r.start_ts)}–${fmt(r.end_ts)}, ${r.shot_count} shots): who won it? Auto: ${auto}${r.point_source === "guess" ? " (guessed)" : ""}`);
+  const auto = TEAM[r.point_team_final] || "未知";
+  revMsg(`回合 ${REV.k + 1}/${REV.list.length}（${fmt(r.start_ts)}–${fmt(r.end_ts)}，${r.shot_count} 拍）誰得分？自動判斷：${auto}${r.point_source === "guess" ? "（推測）" : ""}`);
 }
 function revNext() {
   REV.waiting = false; REV.k++;
-  if (REV.k >= REV.list.length) revMsg("All detected rallies done. Keep playing to add missed points (1 / 2); Esc to finish.");
+  if (REV.k >= REV.list.length) revMsg("所有偵測到的回合都問過了，繼續播放可以補漏掉的分（1 / 2），按 Esc 結束。");
   $("#vid").play();
 }
 function revTick() {
@@ -628,26 +638,26 @@ async function revAnswer(team) {
   await api("/api/winner", {id:M.id, rally_id:r.rally_id, team});
   REV.undo.push({kind:"winner", r, before, k:REV.k});
   revNext();
-  if (REV.k < REV.list.length) revMsg(`Rally ${REV.k}: ${team === "auto" ? "kept the guess" : TEAM[team]} (saved). Playing…`);
+  if (REV.k < REV.list.length) revMsg(`回合 ${REV.k}：${team === "auto" ? "用自動的" : TEAM[team]}（已存）。播放中…`);
 }
 async function revAdd(team) {
   const t = $("#vid").currentTime;
   await api("/api/point", {id:M.id, t, team});
   REV.undo.push({kind:"point", t});
-  revMsg(`Added a point for ${TEAM[team]} at ${fmt(t)} (Backspace undoes it)`);
+  revMsg(`已在 ${fmt(t)} 補一分給${TEAM[team]}（Backspace 可復原）`);
 }
 async function revUndo() {
   const u = REV.undo.pop();
-  if (!u) return revMsg("Nothing to undo.");
-  if (u.kind === "point") { await api("/api/point", {id:M.id, t:u.t, team:"remove"}); return revMsg(`Removed the point added at ${fmt(u.t)}.`); }
+  if (!u) return revMsg("沒有可以復原的。");
+  if (u.kind === "point") { await api("/api/point", {id:M.id, t:u.t, team:"remove"}); return revMsg(`已復原 ${fmt(u.t)} 補的分。`); }
   await api("/api/winner", {id:M.id, rally_id:u.r.rally_id, team:u.before});
   REV.k = u.k; $("#vid").currentTime = Math.max(0, u.r.start_ts - 1); REV.waiting = false; $("#vid").play();
-  revMsg("Undone: replaying that rally.");
+  revMsg("已復原，重播那個回合。");
 }
 async function revStop() {
   REV.on = false; REV.waiting = false; clearInterval(REV.timer);
   $("#vid").pause(); $("#vid").playbackRate = 1; $("#revKeys").style.display = "none";
-  revMsg(`Review finished (${REV.undo.length} changes saved). Press "Apply fixes and re-render" to update the score and video.`);
+  revMsg(`檢查結束（${REV.undo.length} 個修改已存）。按「套用修正並重新輸出」更新比分和影片。`);
   await showResult(true);
 }
 $("#review").onclick = async () => {
@@ -655,7 +665,7 @@ $("#review").onclick = async () => {
   Object.assign(REV, {on:true, k:0, undo:[], waiting:false});
   const v = $("#vid"); v.currentTime = 0; v.playbackRate = +$("#revRate").value; v.play();
   $("#revKeys").style.display = ""; clearInterval(REV.timer); REV.timer = setInterval(revTick, 50);
-  revMsg(REV.list.length ? "Playing…" : "No rallies detected: add points with 1 / 2 while it plays.");
+  revMsg(REV.list.length ? "播放中…" : "沒有偵測到回合：一邊看一邊用 1 / 2 補分。");
 };
 $("#revRate").onchange = () => { $("#vid").playbackRate = +$("#revRate").value; };
 window.addEventListener("keydown", e => {
@@ -668,6 +678,69 @@ window.addEventListener("keydown", e => {
   if (!f) return;
   e.preventDefault(); e.stopPropagation(); f();
 }, true);
+// ---- shuttle labels for fine-tuning TrackNet (detection/finetune.py): one frame at a time,
+// click the shuttle or say there is none; every answer is saved at once.
+const LB = {on:false, list:[], k:0, labels:{}, img:new Image(), hover:null};
+const lbl = $("#lbl"), lctx = lbl.getContext("2d"), zoom = $("#lblZoom"), zctx = zoom.getContext("2d");
+function lblMsg(t) { $("#lblMsg").textContent = t; }
+function lblCount() { return Object.values(LB.labels).length; }
+function lblShow() {
+  const it = LB.list[LB.k];
+  if (!it) return lblMsg(`全部 ${LB.list.length} 張都看過了（已標 ${lblCount()} 張）。在終端機跑 uv run hud finetune out/${M.id}`);
+  lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張…載入中`);
+  LB.img.onload = () => { lblDraw(); lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張`); };
+  LB.img.src = `/api/label/frame?id=${M.id}&f=${it.f}`;
+}
+function lblScale() { return lbl.width / LB.img.naturalWidth; }
+function lblDraw() {
+  if (!LB.img.naturalWidth) return;
+  const w = $("#lblWrap").clientWidth;
+  lbl.width = w; lbl.height = Math.round(w * LB.img.naturalHeight / LB.img.naturalWidth);
+  lctx.drawImage(LB.img, 0, 0, lbl.width, lbl.height);
+  const it = LB.list[LB.k], k = lblScale(), done = LB.labels[it.f];
+  if (it.hint) { lctx.strokeStyle = "#ffd23c"; lctx.lineWidth = 2; lctx.beginPath(); lctx.arc(it.hint[0] * k, it.hint[1] * k, 14, 0, 7); lctx.stroke(); }
+  if (done) {
+    lctx.font = "16px sans-serif"; lctx.fillStyle = "#ff6b6b"; lctx.strokeStyle = "#ff6b6b"; lctx.lineWidth = 2;
+    if (done.state === "shuttle") { const x = done.x * k, y = done.y * k; lctx.beginPath(); lctx.moveTo(x - 8, y - 8); lctx.lineTo(x + 8, y + 8); lctx.moveTo(x + 8, y - 8); lctx.lineTo(x - 8, y + 8); lctx.stroke(); }
+    else lctx.fillText(done.state === "none" ? "已標：沒有羽球" : "已標：被擋住", 12, 24);
+  }
+}
+async function lblSave(state, x = 0, y = 0) {
+  const it = LB.list[LB.k];
+  await api("/api/label", {id:M.id, f:it.f, x, y, state});
+  LB.labels[it.f] = {frame:it.f, x, y, state};
+  LB.k++; lblShow();
+}
+lbl.onmousemove = e => {
+  if (!LB.on || !LB.img.naturalWidth) return;
+  const r = lbl.getBoundingClientRect(), k = lblScale();
+  const x = (e.clientX - r.left) * (lbl.width / r.width) / k, y = (e.clientY - r.top) * (lbl.height / r.height) / k;
+  LB.hover = [x, y]; zoom.style.display = "";
+  const s = 65;  // source px each way: ~4x on a 4K frame
+  zctx.imageSmoothingEnabled = false;
+  zctx.drawImage(LB.img, x - s, y - s, 2 * s, 2 * s, 0, 0, zoom.width, zoom.height);
+  zctx.strokeStyle = "#36c8f0"; zctx.lineWidth = 1; zctx.beginPath();
+  zctx.moveTo(zoom.width / 2, 0); zctx.lineTo(zoom.width / 2, zoom.height); zctx.moveTo(0, zoom.height / 2); zctx.lineTo(zoom.width, zoom.height / 2); zctx.stroke();
+};
+lbl.onmouseleave = () => { zoom.style.display = "none"; };
+lbl.onclick = () => { if (LB.on && LB.hover) lblSave("shuttle", Math.round(LB.hover[0] * 10) / 10, Math.round(LB.hover[1] * 10) / 10); };
+$("#lblStart").onclick = async () => {
+  const j = await api("/api/label/list?id=" + M.id);
+  LB.list = j.frames; LB.labels = {}; j.labels.forEach(l => LB.labels[l.frame] = l);
+  LB.k = Math.max(0, LB.list.findIndex(it => !LB.labels[it.f]));
+  LB.on = true; $("#lblKeys").style.display = ""; lblShow();
+};
+window.addEventListener("keydown", e => {
+  if (!LB.on || REV.on || document.activeElement.tagName === "INPUT") return;
+  const it = LB.list[LB.k], k = e.key;
+  const f = {Enter:() => it && it.hint && lblSave("shuttle", it.hint[0], it.hint[1]), n:() => it && lblSave("none"), N:() => it && lblSave("none"),
+    h:() => it && lblSave("hidden"), H:() => it && lblSave("hidden"), ArrowLeft:() => { LB.k = Math.max(0, LB.k - 1); lblShow(); },
+    ArrowRight:() => { LB.k = Math.min(LB.list.length, LB.k + 1); lblShow(); },
+    Escape:() => { LB.on = false; $("#lblKeys").style.display = "none"; zoom.style.display = "none"; lblMsg(`已標 ${lblCount()} 張（隨時可以繼續）。`); }}[k];
+  if (!f) return;
+  e.preventDefault(); e.stopPropagation(); f();
+}, true);
+window.addEventListener("resize", () => LB.on && lblDraw());
 const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 loadList();
 </script>

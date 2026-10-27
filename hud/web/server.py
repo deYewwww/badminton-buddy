@@ -71,7 +71,7 @@ def motion(mid):
 def info(video):
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
-        raise ValueError("Cannot read this video file")
+        raise ValueError("無法讀取這個影片檔")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -104,8 +104,8 @@ def run_job(mid, start):
 
 def start_job(mid, start):
     if not LOCK.acquire(blocking=False):
-        raise RuntimeError("An analysis is already running: wait for it to finish")
-    JOB.update(id=mid, progress=0.0, msg="Starting…", error=None, running=True)
+        raise RuntimeError("已有一個分析在執行中，請等它完成")
+    JOB.update(id=mid, progress=0.0, msg="開始…", error=None, running=True)
     threading.Thread(target=run_job, args=(mid, start), daemon=True).start()
 
 
@@ -236,13 +236,31 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(jpg)))
                 self.end_headers()
                 return self.wfile.write(jpg.tobytes())
+            if u.path == "/api/label/list":  # shuttle labelling (⑥): frames to label + what is done
+                from hud.detection import finetune
+                d = match_dir(q["id"])
+                lab = finetune.labels(d)
+                return self._json(dict(frames=finetune.todo(d), labels=json.loads(lab.to_json(orient="records"))))
+            if u.path == "/api/label/frame":  # one full-resolution frame
+                cap = cv2.VideoCapture(str(video_of(q["id"])))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(q["f"]))
+                ok, f = cap.read()
+                cap.release()
+                if not ok:
+                    return self._json({"error": "讀不到這一幀"}, 404)
+                ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.end_headers()
+                return self.wfile.write(jpg.tobytes())
             if u.path == "/api/status":
                 return self._json(JOB)
             if u.path == "/api/rallies":
                 return self._json(rallies(q["id"]))
             if u.path == "/api/hud":
                 p = pipeline.paths(match_dir(q["id"]))["hud"]
-                return self._file(p, "video/mp4") if p.exists() else self._json({"error": "No HUD video yet"}, 404)
+                return self._file(p, "video/mp4") if p.exists() else self._json({"error": "還沒有 HUD 影片"}, 404)
             self._json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -281,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
                 corners, frac = court.auto_detect(f)
                 if corners is None:
-                    return self._json({"error": "No court lines found"}, 422)
+                    return self._json({"error": "找不到球場白線"}, 422)
                 return self._json(dict(corners=np.round(corners, 1).tolist(), on_line=round(frac, 2)))
             if u.path == "/api/calib/snap":
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
@@ -296,7 +314,7 @@ class Handler(BaseHTTPRequestHandler):
                 ref, rc = venue.load(b["name"])
                 corners, rep = venue.align(ref, rc, bg_frame(mid))
                 if corners is None:
-                    return self._json({"error": rep.get("error", "Could not align"), **rep}, 422)
+                    return self._json({"error": rep.get("error", "對不起來"), **rep}, 422)
                 return self._json(dict(rep, corners=np.round(corners, 1).tolist()))
             if u.path == "/api/calib/save":
                 v = video_of(mid)
@@ -318,12 +336,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(pipeline.names(match_dir(mid), b.get("names", {})))
             if u.path == "/api/run":
                 if not pipeline.paths(match_dir(mid))["calib"].exists():
-                    return self._json({"error": "Calibrate the court first"}, 400)
+                    return self._json({"error": "請先校正球場"}, 400)
                 start_job(mid, b.get("start", "players"))
                 return self._json({"ok": True})
             if u.path == "/api/winner":
                 set_winner(mid, b["rally_id"], b["team"])
                 return self._json({"ok": True})
+            if u.path == "/api/label":  # {f, x, y, state: shuttle/none/hidden/remove}
+                from hud.detection import finetune
+                return self._json({"ok": True, "n": finetune.save_label(match_dir(mid), b["f"], b.get("x", 0), b.get("y", 0), b["state"])})
             if u.path == "/api/point":  # {t, team: us/opp/remove}
                 return self._json({"ok": True, "n": manual_point(mid, b["t"], b["team"])})
             self._json({"error": "not found"}, 404)
@@ -343,14 +364,14 @@ def free_port(host, port):
 
 def serve(port=7860, lan=False, password=None):
     if lan and not password:
-        raise SystemExit("--lan needs --password (others on the network can connect)")
+        raise SystemExit("--lan 需要 --password（區網上的其他人也能連進來）")
     host = "0.0.0.0" if lan else "127.0.0.1"
     p = free_port(host, port)
     if p != port:
-        print(f"Port {port} is in use, using {p}")
+        print(f"Port {port} 被占用，改用 {p}")
     Handler.password = password
     srv = ThreadingHTTPServer((host, p), Handler)
-    print(f"Open http://127.0.0.1:{p}" + (" (network: use this Mac's IP)" if lan else ""), flush=True)
+    print(f"打開 http://127.0.0.1:{p}" + ("（區網：用這台 Mac 的 IP）" if lan else ""), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

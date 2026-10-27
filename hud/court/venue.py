@@ -83,7 +83,7 @@ def align(ref_bg, ref_corners, bg):
     A, inliers = _feature_homography(rs, ms)
     rep = dict(inliers=inliers)
     if A is None:
-        rep["error"] = "This video does not line up with the venue (phone moved too much?): calibrate again"
+        rep["error"] = "畫面和場地影片對不起來（手機位置差太多？），請重新校正"
         return None, rep
     moved = cv2.perspectiveTransform(np.float64(ref_corners).reshape(-1, 1, 2) * ks, A).reshape(-1, 2) / km
     snapped, on_line = court.snap(bg, moved)
@@ -92,6 +92,6 @@ def align(ref_bg, ref_corners, bg):
     rep.update(on_line=round(float(on_line), 2), plausible=bool(ok[0]),
                moved_px=round(float(np.abs(snapped - np.float64(ref_corners)).max()), 1))
     if not ok[0]:
-        rep["error"] = "The aligned court position is implausible: calibrate again"
+        rep["error"] = "對齊後的球場位置不合理，請重新校正"
         return None, rep
     return snapped, rep

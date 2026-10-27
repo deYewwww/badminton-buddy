@@ -177,6 +177,19 @@ def test_idle_frames():
     assert not idle_frames(few, t, cfg).any()
 
 
+def test_finetune_score():
+    """The held-out check that decides whether fine-tuned weights are kept: a hit within TOL_PX,
+    a miss, a detection in the wrong place (miss + false alarm), a false alarm on an empty frame."""
+    from hud.detection.finetune import _target, score
+    hm = np.zeros((4, 8, 288, 512), np.float32)
+    hm[0, 3] = _target((100, 50))     # right place, frame 3 of its window
+    hm[2, 0] = _target((300, 200))    # 40+ px off
+    hm[3, 5] = _target((10, 10))      # nothing there
+    Y = np.array([(101, 52), (200, 100), (260, 180), (np.nan, np.nan)], np.float32)
+    s = score(hm, Y, np.array([3, 3, 0, 5]))
+    assert (s["tp"], s["fn"], s["fp"], s["tn"]) == (1, 2, 2, 0), s
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
