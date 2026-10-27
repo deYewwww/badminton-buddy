@@ -132,20 +132,20 @@ def run(out_dir, truth_path):
 
 def text(rep):
     r, h, s = rep["rallies"], rep["hits"], rep["score"]
-    lines = [f"回合：標記 {r['truth']}、找到 {r['found']}、多出 {r['extra']}（找到率 {r['recall']:.0%}、正確率 {r['precision']:.0%}）"]
+    lines = [f"Rallies: labelled {r['truth']}, found {r['found']}, extra {r['extra']} (recall {r['recall']:.0%}, precision {r['precision']:.0%})"]
     if "start_err_s" in r:
-        lines.append(f"  起點誤差中位數 {r['start_err_s']} 秒、終點 {r['end_err_s']} 秒")
+        lines.append(f"  median start error {r['start_err_s']} s, end {r['end_err_s']} s")
     if "shots_abs_err" in r:
-        lines.append(f"  拍數：標記 {r['shots_truth']}、找到 {r['shots_found']}（每回合平均差 {r['shots_abs_err']} 拍）")
+        lines.append(f"  shots: labelled {r['shots_truth']}, found {r['shots_found']} (mean error {r['shots_abs_err']} per rally)")
     if "winner_acc" in r:
-        lines.append(f"  得分方：{r['winner_right']}/{r['winner_judged']} 正確（{r['winner_acc']:.0%}）")
+        lines.append(f"  winner: {r['winner_right']}/{r['winner_judged']} right ({r['winner_acc']:.0%})")
     if h["truth"]:
-        lines.append(f"擊球（標記範圍內）：標記 {h['truth']}、找到 {h['found']}、漏掉 {h['missed']}、多出 {h['extra']}；"
-                     f"判對邊 {h['right_side']}/{h['found']}（{h['side_acc']:.0%}）")
+        lines.append(f"Hits (in labelled range): labelled {h['truth']}, found {h['found']}, missed {h['missed']}, extra {h['extra']}; "
+                     f"right side {h['right_side']}/{h['found']} ({h['side_acc']:.0%})")
     if s["truth_final"] != "0:0":
-        lines.append(f"比分：標記 {s['truth_final']}、程式 {s['found_final']}")
+        lines.append(f"Score: labelled {s['truth_final']}, found {s['found_final']}")
     c = rep.get("consistency") or {}
     if c:
-        lines.append(f"一致性：羽球偵測 對打中 {c['shuttle_in_play']:.0%} / 死球 {c['shuttle_dead_time']:.0%}；"
-                     f"對打中每秒 {c['hits_per_s']} 拍（業餘雙打約 0.8–1.2）；同邊連續 {c['same_side_in_a_row']} 次（{c['same_side_rate']:.0%}）")
+        lines.append(f"Consistency: shuttle seen in play {c['shuttle_in_play']:.0%} / dead time {c['shuttle_dead_time']:.0%}; "
+                     f"{c['hits_per_s']} hits/s in play (amateur doubles ~0.8-1.2); same side twice in a row {c['same_side_in_a_row']} ({c['same_side_rate']:.0%})")
     return "\n".join(lines)

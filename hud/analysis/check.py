@@ -39,7 +39,7 @@ def run(out_dir, video=None, draw=True):
     p = paths(out_dir)
     rep, warn = {}, []
     if not p["calib"].exists():
-        return dict(warnings=["還沒校正球場"])
+        return dict(warnings=["The court is not calibrated yet"])
     wv, wc, _ = work(out_dir, video or json.loads(p["calib"].read_text())["video"])
     H, calib = court.load(wc)
     video = wv if wc != p["calib"] else (video or calib["video"])
@@ -48,9 +48,9 @@ def run(out_dir, video=None, draw=True):
     fit, plausible = calib_fit(bg, calib["corners"], native=native_size(video))
     rep["calib"] = dict(corners=calib["corners"], on_line=round(fit, 2), camera_plausible=plausible)
     if fit < 0.3 and not plausible:
-        warn.append(f"球場校正可能錯了：黃線只有 {fit:.0%} 落在偵測到的白線上。")
+        warn.append(f"The court calibration may be wrong: only {fit:.0%} of the yellow lines fall on detected white lines.")
     if not plausible:
-        warn.append("球場校正推算出的相機位置不合理（不在近端底線後方、或高度不對），角點很可能放錯。")
+        warn.append("The calibration gives an implausible camera position (not behind the near baseline, or the wrong height): the corners are probably misplaced.")
 
     pl = pd.read_parquet(p["players"]) if p["players"].exists() else None
     if pl is not None:
@@ -58,22 +58,22 @@ def run(out_dir, video=None, draw=True):
         seen = (pl[pl.observed].groupby("player_id").frame.nunique() / frames).reindex(["P1", "P2", "P3", "P4"]).fillna(0)
         rep["players_observed"] = seen.round(2).to_dict()
         if seen[["P3", "P4"]].max() < 0.1 and seen[["P1", "P2"]].max() > 0.3:
-            warn.append("幾乎沒偵測到對手（遠端）。通常是校正錯：遠端球員被算到場外而丟掉，並不是模型看不到人。")
+            warn.append("Almost no opponents (far side) detected. Usually a wrong calibration: far players are placed off court and dropped, not missed by the model.")
         elif seen.min() < 0.3:
-            warn.append(f"有球員大部分時間沒追到：{', '.join(f'{k} {v:.0%}' for k, v in seen.items())}")
+            warn.append(f"Some players are untracked most of the time: {', '.join(f'{k} {v:.0%}' for k, v in seen.items())}")
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
     if sh is not None:
         det = float((sh.visible & ~sh.interpolated & ~sh.inpainted).mean())
         rep["shuttle_detected"] = round(det, 3)
         if det < 0.05:
-            warn.append(f"羽球幾乎沒追到（{det:.1%} 的幀）。")
+            warn.append(f"The shuttle is barely tracked ({det:.1%} of frames).")
     if p["hits"].exists():
         hits = pd.read_parquet(p["hits"])
         rep["hits"] = len(hits)
         if "team" in hits:
             rep["hits_by_team"] = hits.team.value_counts().to_dict()
         if not len(hits):
-            warn.append("沒有找到任何擊球：回合、拍數、比分都會是空的。先修好上面的問題。")
+            warn.append("No hits found: rallies, shots and score will be empty. Fix the problems above first.")
     if p["rallies"].exists():
         rep["rallies"] = len(pd.read_parquet(p["rallies"]))
     rep["warnings"] = warn
@@ -93,5 +93,5 @@ def run(out_dir, video=None, draw=True):
 
 def text(rep):
     lines = [f"{k}: {v}" for k, v in rep.items() if k != "warnings"]
-    lines += ["⚠ " + w for w in rep.get("warnings", [])] or ["沒有發現明顯問題"]
+    lines += ["⚠ " + w for w in rep.get("warnings", [])] or ["No obvious problems found"]
     return "\n".join(lines)

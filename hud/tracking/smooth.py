@@ -109,6 +109,12 @@ def smooth_players(df, H, accel=ACCEL):
         out = np.full((len(g), 2), np.nan)
         for a, b in zip(np.r_[0, breaks], np.r_[breaks, len(g)]):
             out[a:b] = rts(g.timestamp.to_numpy(float)[a:b], z[a:b], R[a:b], accel)
+            # before the first / after the last sighting of a run: hold it, don't extrapolate.
+            # The velocity carried a partner hidden for a second 4 m across the net (user, 16 s)
+            m = np.flatnonzero(meas[a:b])
+            if len(m):
+                out[a:a + m[0]] = out[a + m[0]]
+                out[a + m[-1] + 1:b] = out[a + m[-1]]
         ok = np.isfinite(out[:, 0])
         idx = g.index[ok]
         df.loc[idx, "x_m"] = np.round(out[ok, 0], 3)

@@ -71,10 +71,10 @@ def prepare(video, out_dir, progress=print):
     print(f"Camera {'moves' if moved else 'is fixed'}: view shift up to {shift:.1%} of the width, {lost} samples unmatched")
     if not moved:
         return work(out_dir, video)
-    progress("鏡頭有移動，先穩定畫面…")
-    step = {"measure": "分析鏡頭移動", "write": "輸出穩定後的影片"}
+    progress("The camera moves: stabilising first…")
+    step = {"measure": "measuring camera motion", "write": "writing the stabilised video"}
     corners = stabilize.run(video, p["stab"], t, calib["corners"],
-                            progress=lambda x, what: progress(f"穩定畫面（{step[what]}）… {x:.0%}"))
+                            progress=lambda x, what: progress(f"Stabilising ({step[what]})… {x:.0%}"))
     cw, ch = json.loads(p["stab"].with_suffix(".json").read_text())["canvas"]
     court.save(p["stab_calib"], p["stab"], (cw, ch), corners, t=t, **key)
     _stab_marks(p)
@@ -146,33 +146,33 @@ def analyse(video, out_dir, progress=print, start="players"):
         nonlocal last
         took[stage], last = round(time.time() - last, 1), time.time()
     if "players" in todo:
-        progress(0.0, "檢查鏡頭是否移動…")
+        progress(0.0, "Checking whether the camera moves…")
         wv, wc, wm = prepare(video, out_dir, progress=lambda m: progress(0.0, m))
         lap("stabilize")
     else:
         wv, wc, wm = work(out_dir, video)
     if "players" in todo:
-        progress(0.0, "偵測球員…")
-        players.run(wv, wc, p["players"], progress=lambda x: progress(0.45 * x, "偵測球員…"), marks=wm)
+        progress(0.0, "Detecting players…")
+        players.run(wv, wc, p["players"], progress=lambda x: progress(0.45 * x, "Detecting players…"), marks=wm)
         lap("players")
     if "shuttle" in todo:
-        progress(0.45, "追蹤羽球…")
+        progress(0.45, "Tracking the shuttle…")
         shuttle.run(wv, p["shuttle"], players_path=p["players"], calib_path=wc)
         lap("shuttle")
     if "hits" in todo:
-        progress(0.7, "判斷擊球…")
+        progress(0.7, "Finding hits…")
         hits.run(p["shuttle"], p["players"], wc, p["hits"])
         lap("hits")
     if "rallies" in todo:
-        progress(0.75, "切分回合、計分…")
+        progress(0.75, "Splitting rallies, scoring…")
         from hud.court.stabilize import cuts_of
         rallies.run(p["hits"], p["players"], p["shots"], p["rallies"], shuttle_path=p["shuttle"],
                     point_fixes=p["fixes"], cuts=cuts_of(wv), manual_points=p["manual"])
         lap("rallies")
     if "hud" in todo:
         from hud.visualization import render
-        progress(0.8, "產生 HUD 影片…")
-        render.render(video, out_dir, progress=lambda x: progress(0.8 + 0.2 * x, "產生 HUD 影片…"))
+        progress(0.8, "Rendering the HUD video…")
+        render.render(video, out_dir, progress=lambda x: progress(0.8 + 0.2 * x, "Rendering the HUD video…"))
         lap("hud")
     total = time.time() - t0
     p["timing"].write_text(json.dumps(dict(took, total=round(total, 1)), ensure_ascii=False))
@@ -185,7 +185,7 @@ def analyse(video, out_dir, progress=print, start="players"):
         warn = rep.get("warnings", [])
     except Exception as e:
         print(f"check failed: {e}")
-    progress(1.0, f"完成（{total:.0f} 秒：" + "、".join(f"{k} {v:.0f}" for k, v in took.items()) + "）"
+    progress(1.0, f"Done ({total:.0f} s: " + ", ".join(f"{k} {v:.0f}" for k, v in took.items()) + ")"
              + "".join("\n⚠ " + w for w in warn))
     return p
 
@@ -193,7 +193,7 @@ def analyse(video, out_dir, progress=print, start="players"):
 def names(out_dir, new=None):
     """Player display names, stored per match."""
     f = paths(out_dir)["names"]
-    cur = {"P1": "我隊1", "P2": "我隊2", "P3": "對手1", "P4": "對手2"}
+    cur = {"P1": "US 1", "P2": "US 2", "P3": "OPP 1", "P4": "OPP 2"}
     if f.exists():
         cur.update(json.loads(f.read_text()))
     if new:

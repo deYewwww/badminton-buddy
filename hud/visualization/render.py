@@ -32,17 +32,22 @@ TEAM = {"P1": "us", "P2": "us", "P3": "opp", "P4": "opp"}
 BG = (30, 24, 14)            # panel background (BGR)
 EDGE = (120, 100, 60)
 WHITE, GREY, RED, GREEN = (245, 245, 245), (170, 170, 160), (80, 80, 255), (90, 225, 160)
-TYPE_LABEL = {"smash": "殺球", "clear": "高遠球", "drop": "吊球", "net": "網前", "drive": "平抽", "other": ""}
+TYPE_LABEL = {"smash": "SMASH", "clear": "CLEAR", "drop": "DROP", "net": "NET", "drive": "DRIVE", "other": ""}
 MAX_OUT_FPS = 30
 MAX_OUT_SIDE = 1920
 LOCK_S, BANNER_S = 1.0, 1.6
+SCORE_DELAY_S = 1.0          # score + POINT banner 1 s after the rally ends (the user: once the shuttle is down,
+                             # not as soon as the track stops, and well before the next serve)
 COST_S = 0.9                 # stroke-cost popup on the name tag
-TRAIL_N = 8                  # shuttle tail, frames
+TRAIL_S = 0.5                # shuttle tail (the yellow line behind the reticle), seconds
+FILL_MAX_S = 0.8             # longest hidden stretch of a flight bridged by the flight curve (fill_flights)
+FILL_MIN_SEEN = 2            # ... and only on flights with at least this many real sightings
+YELLOW = (40, 215, 255)      # reticle + tail (BGR)
+RING_R, RING_IN = 0.55, 0.38  # foot ring radius / inner ring radius (m)
 TRACK_MIN = 5                # shuttle drawn only on runs of at least this many real sightings
 POS_SMOOTH_S, BOX_SMOOTH_S = 0.3, 0.4  # display smoothing of feet (rings) and boxes (name tags)
 TAG_EASE = 0.35              # name tags move this fraction of the way to their new place per frame
 TAG_HOLD_S = 1.0             # ... and stay put this long when the player's box is lost
-COST_LABEL = {"defence": "防守", "other": "擊球"}
 MOVE_MS, STOP_MS = 2.0, 0.8  # target marker while faster than this; ARRIVED once below STOP_MS
 
 
@@ -133,6 +138,7 @@ def load(out_dir, F, fps):
     rallies = pd.read_parquet(p["rallies"]) if p["rallies"].exists() else pd.DataFrame()
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
     shuttle = shown_track(sh, F, lens_short(out_dir)) if sh is not None else np.full((F, 2), np.nan)
+    shuttle = fill_flights(shuttle, shots, rallies, F, fps)
 
     step = np.r_[np.zeros((1, 4)), np.nan_to_num(np.hypot(*np.diff(pos, axis=0).transpose(2, 0, 1)))]
     step = np.minimum(step, 12.0 / fps)  # > 12 m/s is an identity jump, not running
@@ -184,6 +190,48 @@ def shown_track(sh, F, short=1080, min_run=TRACK_MIN, max_gap=2, max_step=0.1):
         _keep(out, fr, P, run, min_run)
         run = [i]
     _keep(out, fr, P, run, min_run)
+    return out
+
+
+def sure(shot):
+    """A shot whose speed and type the HUD may show (hits: the physical flight fit held)."""
+    return shot is not None and bool(getattr(shot, "sure", False)) and pd.notna(shot.speed_kmh_est)
+
+
+def fill_flights(shown, shots, rallies, F, fps, max_gap_s=FILL_MAX_S, min_seen=FILL_MIN_SEEN):
+    """Between a hit and the next one the shuttle is in one smooth flight, so the frames TrackNet
+    missed there (behind a player, lost against a banner) are filled along a shape-preserving
+    curve (PCHIP in x(t), y(t): no overshoot) through the hit's contact pixel, the real
+    sightings and the next contact. Only gaps up to max_gap_s, and only on flights with at
+    least min_seen real sightings: a flight nobody saw is not drawn. The last shot of a rally
+    ends at its last sighting (no extrapolation)."""
+    from scipy.interpolate import PchipInterpolator
+    out = shown.copy()
+    if not len(shots) or "shuttle_x_px" not in shots or "rally_id" not in shots:
+        return out
+    seen = np.isfinite(shown[:, 0])
+    end = dict(zip(rallies.rally_id, rallies.end_frame)) if len(rallies) else {}
+    gap = max(2, int(max_gap_s * fps))
+    for rid, g in shots.sort_values("frame").groupby("rally_id"):
+        g = g[np.isfinite(g.shuttle_x_px)]
+        fr, px = g.frame.to_numpy(int), g[["shuttle_x_px", "shuttle_y_px"]].to_numpy(float)
+        for k in range(len(fr)):
+            a = fr[k]
+            b = fr[k + 1] if k + 1 < len(fr) else int(end.get(rid, a))
+            inside = np.arange(a + 1, min(b, F))
+            inside = inside[seen[inside]]
+            if len(inside) < min_seen:
+                continue
+            t = np.r_[a, inside, [b] if k + 1 < len(fr) else []].astype(int)
+            P = np.r_[px[k:k + 1], shown[inside], px[k + 1:k + 2] if k + 1 < len(fr) else np.zeros((0, 2))]
+            t, keep = np.unique(t, return_index=True)
+            if len(t) < 2:
+                continue
+            curve = PchipInterpolator(t, P[keep], axis=0)
+            for t0, t1 in zip(t, t[1:]):
+                if 1 < t1 - t0 <= gap:
+                    mid = np.arange(t0 + 1, min(t1, F))
+                    out[mid] = np.where(np.isnan(out[mid]), curve(mid), out[mid])
     return out
 
 
@@ -365,12 +413,8 @@ class Hud:
             p = S["pos"][f, k]
             if not np.isfinite(p[0]):
                 continue
+            self.ring(img, f, p, S["colors"][pid])
             col = S["colors"][pid]
-            ring = floor_poly(self.Ginv, circle_pts(p, 0.55))
-            cv2.polylines(img, [ring], True, tuple(int(c * 0.55) for c in col), max(2, int(7 * u)), cv2.LINE_AA)
-            cv2.polylines(img, [ring], True, col, max(1, int(3 * u)), cv2.LINE_AA)
-            c = court.to_court(self.Ginv, [p])[0]
-            put(img, S["names"][pid], 20 * u, col, c[0], c[1], "cm")
             if TEAM[pid] == "us":
                 self.move_target(img, f, k, col)
         r = S["rally_of"][max(f - int(BANNER_S * self.fps), 0)] if f else -1
@@ -400,18 +444,53 @@ class Hud:
         panel(img, tip[0] - w / 2 - 8 * u, tip[1], tip[0] + w / 2 + 8 * u, tip[1] + 34 * u, alpha=0.85)
         put(img, label, 22 * u, (140, 255, 200), tip[0], tip[1] + 17 * u, "cm")
 
-    def trail(self, img, f, n=TRAIL_N):
-        """The shuttle and a short fading tail of where it just was (tracked frames only)."""
-        P = self.S["shuttle"][max(0, f - n):f + 1]
+    def trail(self, img, f):
+        """The tracked shuttle: a yellow reticle (corner brackets around a small ring) and a tail of
+        where it flew in the last TRAIL_S, brightest at the shuttle. Real sightings and the
+        flight curve between them (fill_flights); nothing where neither is known."""
         u = self.u
-        pts = [(k, p) for k, p in enumerate(P) if np.isfinite(p[0])]
-        for (k0, a), (k1, b) in zip(pts, pts[1:]):
-            if k1 - k0 > 2:  # don't join across a gap
-                continue
-            w = (k1 + 1) / len(P)
-            cv2.line(img, tuple(np.int32(a)), tuple(np.int32(b)), (int(255 * w), int(240 * w), 120), max(1, int(4 * u * w)), cv2.LINE_AA)
-        if np.isfinite(P[-1, 0]):
-            cv2.circle(img, tuple(np.int32(P[-1])), max(3, int(9 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
+        P = self.S["shuttle"][max(0, f - int(TRAIL_S * self.fps)):f + 1]
+        if not np.isfinite(P[-1, 0]):
+            return
+        run = len(P) - 1  # the tail is the unbroken run ending now
+        while run > 0 and np.isfinite(P[run - 1, 0]):
+            run -= 1
+        Q = P[run:]
+        for k in range(1, len(Q)):
+            w = k / max(len(Q) - 1, 1)
+            col = tuple(int(c * (0.35 + 0.65 * w)) for c in YELLOW)
+            cv2.line(img, tuple(np.int32(Q[k - 1])), tuple(np.int32(Q[k])), col, max(1, int((1 + 2 * w) * u)), cv2.LINE_AA)
+        x, y = np.int32(P[-1])
+        cv2.circle(img, (int(x), int(y)), max(3, int(8 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
+        a, b, t = int(24 * u), int(9 * u), max(1, int(3 * u))
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                cx, cy = x + sx * a, y + sy * a
+                cv2.line(img, (cx, cy), (cx - sx * b, cy), YELLOW, t, cv2.LINE_AA)
+                cv2.line(img, (cx, cy), (cx, cy - sy * b), YELLOW, t, cv2.LINE_AA)
+
+    def ring(self, img, f, p, col):
+        """Glowing perspective ring under a player: a faint disc, a soft glow, a thick outer ring,
+        a thin inner ring and a white highlight arc that turns slowly."""
+        u = self.u
+        outer = floor_poly(self.Ginv, circle_pts(p, RING_R, 72))
+        inner = floor_poly(self.Ginv, circle_pts(p, RING_IN, 72))
+        x0, y0 = np.maximum(outer.min(0) - int(24 * u), 0)
+        x1, y1 = np.minimum(outer.max(0) + int(24 * u), [img.shape[1], img.shape[0]])
+        if x1 <= x0 or y1 <= y0:
+            return
+        roi = img[y0:y1, x0:x1]
+        o, i = outer - [x0, y0], inner - [x0, y0]
+        glow = np.zeros_like(roi)
+        cv2.fillPoly(glow, [o], tuple(int(c * 0.25) for c in col), cv2.LINE_AA)
+        cv2.polylines(glow, [o], True, col, max(3, int(12 * u)), cv2.LINE_AA)
+        k = max(3, int(14 * u)) | 1
+        cv2.add(roi, cv2.GaussianBlur(glow, (k, k), 0), dst=roi)  # additive: it lights the floor up
+        cv2.polylines(roi, [o], True, col, max(2, int(4 * u)), cv2.LINE_AA)
+        cv2.polylines(roi, [i], True, tuple(int(c * 0.8) for c in col), max(1, int(1.5 * u)), cv2.LINE_AA)
+        start = int((f / self.fps) * 12) % 72  # one turn every 6 s
+        arc = np.take(o, np.arange(start, start + 14) % 72, axis=0)
+        cv2.polylines(roi, [arc], False, (255, 255, 255), max(2, int(4 * u)), cv2.LINE_AA)
 
     def landing_burst(self, img, f):
         """Expanding rings where a scoring shot landed; gold for PERFECT/GREAT placement."""
@@ -470,7 +549,7 @@ class Hud:
             bar(img, x + 14 * u, y + th - 16 * u, tw - 28 * u, 7 * u, stam / 100, col)
             for g, kk, c, kind in self.recent_costs(f, k):  # what that stroke cost, floating up
                 age = (f - g) / self.fps
-                put(img, f"-{c:.1f} {TYPE_LABEL.get(kind, '') or COST_LABEL.get(kind, '')}".rstrip(), 22 * u,
+                put(img, f"-{c:.1f}", 22 * u,
                     (90, 170, 255), x + tw - 12 * u, y - 4 * u - age * 30 * u, "rb")
 
     def recent_costs(self, f, k, span=COST_S):
@@ -489,21 +568,16 @@ class Hud:
     def lock_on(self, img, f):
         S, u = self.S, self.u
         shot, _, _ = self.current_shot(f)
-        if shot is None or not pd.notna(shot.speed_kmh_est) or (f - shot.frame) / self.fps > LOCK_S:
+        if not sure(shot) or (f - shot.frame) / self.fps > LOCK_S:
             return
         # on the shuttle as it is now, or not at all: pinned to where it was hit, the reticle hung
         # in the air while the camera panned (the user saw it as the tracker floating)
         p = S["shuttle"][f]
         if not np.isfinite(p[0]):
             return
-        col = (255, 230, 120)
-        cv2.circle(img, (int(p[0]), int(p[1])), int(22 * u), col, max(1, int(2 * u)), cv2.LINE_AA)
-        for a in range(4):
-            d = np.array([np.cos(a * np.pi / 2), np.sin(a * np.pi / 2)])
-            cv2.line(img, tuple(np.int32(p + d * 14 * u)), tuple(np.int32(p + d * 30 * u)), col, max(1, int(2 * u)))
-        x, y = p[0] + 40 * u, p[1] - 70 * u
-        panel(img, x, y, x + 200 * u, y + 62 * u, col)
-        put(img, "LOCK ON", 18 * u, (200, 230, 255), x + 14 * u, y + 6 * u)
+        x, y = p[0] + 46 * u, p[1] - 76 * u
+        panel(img, x, y, x + 200 * u, y + 62 * u, YELLOW)
+        put(img, "LOCK ON", 18 * u, YELLOW, x + 14 * u, y + 6 * u)
         put(img, f"{shot.speed_kmh_est:.0f} km/h", 28 * u, WHITE, x + 14 * u, y + 28 * u)
 
     def top_bar(self, img, f):
@@ -520,7 +594,7 @@ class Hud:
             t = (f - rally.start_frame) / self.fps
         widths = [235, 235, 330, 200]
         x = m
-        heads = ["回合時間", "擊球數", "球速（估）" if shot is not None and pd.notna(shot.speed_kmh_est) else "搜尋羽球", "比分"]
+        heads = ["RALLY TIME", "RALLY COUNT", "SHOT SPEED" if sure(shot) else "SHUTTLE SEARCH", "SCORE"]
         for i, (wd, head) in enumerate(zip(widths, heads)):
             wd *= u
             panel(img, x, y, x + wd, y + h, (240, 200, 54) if i == 1 else None)
@@ -529,9 +603,10 @@ class Hud:
             if i == 0:
                 put(img, f"{int(t // 60):02d}:{t % 60:05.2f}", 38 * u, WHITE, x + 16 * u, vy)
             elif i == 1:
-                put(img, f"{n} 拍", 38 * u, WHITE, x + 16 * u, vy)
+                put(img, f"{n}", 38 * u, WHITE, x + 16 * u, vy)
+                put(img, "SHOT", 18 * u, GREY, x + wd - 14 * u, vy + 16 * u, "rt")
             elif i == 2:
-                if shot is not None and pd.notna(shot.speed_kmh_est):
+                if sure(shot):
                     w = put(img, f"{shot.speed_kmh_est:.0f}", 38 * u, WHITE, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 26 * u + w, vy + 14 * u)
                     put(img, TYPE_LABEL.get(shot.shot_type, ""), 24 * u, (140, 255, 200), x + wd - 14 * u, vy + 8 * u, "rt")
@@ -549,25 +624,25 @@ class Hud:
         R = self.S["rallies"]
         if not len(R) or "score_us" not in R:
             return self.start_score
-        done = R[R.end_frame <= f]
+        done = R[R.end_frame + SCORE_DELAY_S * self.fps <= f]
         return (int(done.score_us.iat[-1]), int(done.score_opp.iat[-1])) if len(done) else self.start_score
 
     def banner(self, img, f):
-        """'我隊 得分' (+ placement label) right after a rally is decided."""
+        """'US POINT' / 'OPP POINT' (+ placement label) once a rally is decided."""
         S, u = self.S, self.u
         for r in S["rallies"].itertuples():
-            age = (f - r.end_frame) / self.fps
+            age = (f - r.end_frame) / self.fps - SCORE_DELAY_S
             team = getattr(r, "point_team_final", None)
             if not 0 <= age <= BANNER_S or team not in ("us", "opp"):
                 continue
-            text = ("我隊 得分" if team == "us" else "對手 得分")
+            text = ("US POINT" if team == "us" else "OPP POINT")
             guessed = getattr(r, "point_source", "") == "guess"
             col = S["colors"]["P1" if team == "us" else "P3"]
             cx, cy = self.W / 2, 175 * u
             panel(img, cx - 190 * u, cy, cx + 190 * u, cy + 70 * u, col, alpha=0.85)
             put(img, text, 36 * u, col, cx, cy + 35 * u, "cm")
             if guessed:  # landing not seen: say so (the editor's table fixes it)
-                put(img, "推測", 18 * u, GREY, cx + 180 * u, cy + 8 * u, "rt")
+                put(img, "GUESS", 16 * u, GREY, cx + 180 * u, cy + 8 * u, "rt")
             lab = r.winning_label if isinstance(r.winning_label, str) else ""
             if lab:
                 put(img, lab, 30 * u, (60, 210, 255) if lab in ("PERFECT", "GREAT") else WHITE, cx, cy + 92 * u, "cm")
@@ -582,7 +657,7 @@ class Hud:
             stam = S["stamina"][f, k]
             panel(img, x, y, x + w, y + rh, col)
             put(img, S["names"][pid], 25 * u, col, x + 16 * u, y + 6 * u)
-            put(img, f"體力 {stam:.0f}", 23 * u, RED if stam < 15 else WHITE, x + w - 14 * u, y + 7 * u, "rt")
+            put(img, f"STAMINA {stam:.0f}", 21 * u, RED if stam < 15 else WHITE, x + w - 14 * u, y + 7 * u, "rt")
             bar(img, x + 16 * u, y + 36 * u, w - 30 * u, 7 * u, stam / 100, col)
             put(img, "MOVE", 12 * u, GREY, x + 16 * u, y + 48 * u)
             lit = int(round(S["move"][f, k] * 16))
@@ -596,11 +671,12 @@ class Hud:
         pw, ph = 470 * u, 4 * 70 * u - 6 * u
         x0, y0 = self.W - 24 * u - pw, self.Hh - 24 * u - ph - 40 * u
         panel(img, x0, y0, x0 + pw, y0 + ph, (240, 200, 54))
-        put(img, "球場地圖", 22 * u, WHITE, x0 + 16 * u, y0 + 8 * u)
-        put(img, "球員位置", 16 * u, GREY, x0 + pw - 14 * u, y0 + 12 * u, "rt")
+        put(img, "COURT MAP", 22 * u, WHITE, x0 + 16 * u, y0 + 8 * u)
+        w = put(img, "× OUT", 15 * u, (70, 70, 240), x0 + pw - 14 * u, y0 + 12 * u, "rt")
+        put(img, "× IN", 15 * u, (90, 220, 120), x0 + pw - 24 * u - w, y0 + 12 * u, "rt")
         cx0, cy0, cw, ch = x0 + 26 * u, y0 + 62 * u, pw - 52 * u, ph - 112 * u
-        put(img, "我隊", 18 * u, S["colors"]["P1"], cx0, y0 + 38 * u)
-        put(img, "對手", 18 * u, S["colors"]["P3"], cx0 + cw, y0 + 38 * u, "rt")
+        put(img, "US", 18 * u, S["colors"]["P1"], cx0, y0 + 38 * u)
+        put(img, "OPP", 18 * u, S["colors"]["P3"], cx0 + cw, y0 + 38 * u, "rt")
         to = lambda p: (int(cx0 + cw * p[1] / COURT_L), int(cy0 + ch * (1 - p[0] / COURT_W)))
         line = (200, 190, 160)
         for a, b in court.LINES:
@@ -608,10 +684,14 @@ class Hud:
         nx = to((0, NET_Y))[0]
         for yy in range(int(cy0), int(cy0 + ch), max(2, int(8 * u))):
             cv2.line(img, (nx, yy), (nx, yy + max(1, int(4 * u))), (220, 220, 220), 1)
-        for r in S["rallies"].itertuples():  # where points were won
-            if r.end_frame <= f and getattr(r, "landing_in", False) and np.isfinite(r.landing_x):
+        for r in S["rallies"].itertuples():  # where rallies ended: in (green) / out (red); unsure: not drawn
+            inn = getattr(r, "landing_in", None)
+            if r.end_frame <= f and inn in (True, False) and np.isfinite(r.landing_x):
                 q = to((r.landing_x, r.landing_y))
-                cv2.drawMarker(img, q, (60, 210, 255), cv2.MARKER_TILTED_CROSS, int(10 * u), max(1, int(2 * u)))
+                col = (90, 220, 120) if inn else (70, 70, 240)
+                cv2.drawMarker(img, q, col, cv2.MARKER_TILTED_CROSS, int(10 * u), max(1, int(2 * u)))
+                if (f - r.end_frame) / self.fps < 3.0:  # the one just played
+                    cv2.circle(img, q, int(13 * u), col, max(1, int(2 * u)), cv2.LINE_AA)
         for k, pid in enumerate(PIDS):
             p = S["pos"][f, k]
             if not np.isfinite(p[0]):
@@ -622,7 +702,7 @@ class Hud:
             if k == 0:
                 cv2.circle(img, q, int(14 * u), WHITE, max(1, int(2 * u)), cv2.LINE_AA)
             put(img, S["names"][pid], 17 * u, col, q[0] + 12 * u, q[1] - 6 * u, "lb")
-        put(img, f"{S['names']['P1']} 追蹤中", 15 * u, GREY, x0 + 16 * u, y0 + ph - 10 * u, "lb")
+        put(img, f"TRACKING {S['names']['P1']}", 15 * u, GREY, x0 + 16 * u, y0 + ph - 10 * u, "lb")
 
 
 def to_original(box, shuttle, M):

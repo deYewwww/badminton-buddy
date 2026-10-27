@@ -22,8 +22,12 @@ from hud.media.video import frame_times, frames, probe
 
 # (player_id, team, side): side 0 = near half (camera side, y < NET_Y)
 SLOTS = [("P1", "us", 0), ("P2", "us", 0), ("P3", "opp", 1), ("P4", "opp", 1)]
-SIDE_MARGIN_M = 0.6  # keep people whose feet are at most this far outside a side line (umpire, line
-END_MARGIN_M = 1.3   # judges stand further out) ... or this far behind a baseline (players retreat for clears)
+SIDE_MARGIN_M = 0.3  # keep people whose feet are at most this far outside a side line ...
+NEAR_END_MARGIN_M = 0.5  # ... this far behind the near (camera) baseline ...
+END_MARGIN_M = 1.3   # ... or this far behind the far one (players retreat for clears; far feet are metres per pixel).
+                     # Near / side were 1.3 / 0.6: passers-by walking right in front of the camera (0.8-1.1 m
+                     # behind the baseline) and along the side line (0.5 m out) became 我隊1 for 6 s (user's
+                     # IMG_9840, 96-103 s); the players themselves were there in 0.15 % / 0.07 % of detections
 BASE_GATE_M = 0.5   # max jump between consecutive frames (foot-point jitter)...
 MAX_SPEED = 8.0     # ...plus this many m/s for every second a slot has been unseen
 MIN_SEP_M = 1.0     # a new player must stand at least this far from the one already tracked
@@ -31,6 +35,11 @@ DET_FPS = 10        # pose model runs per second of video (see run)
 MAX_COAST_S = 1.0   # keep emitting the last ground position this long after losing a player
                     # (occluded by partner, or mid-jump: an airborne foot point projects metres too deep)
 HIST_W_M = 0.5
+REACQ_M = (0.15, 0.3)  # a slot lost for more than MAX_COAST_S, or one starting, only takes someone standing
+                       # in the court: at most this far outside a side line / behind a baseline. With 我隊1
+                       # walked off between points, a man passing right in front of the camera (0.8 m behind
+                       # the baseline, 1.6 m tall by the camera model: a person like any other) became 我隊1
+                       # for 6 s, then walked along the side line (user's IMG_9840, 96-103 s)
 COST_FLOOR_M = 0.3  # matching cost: distance over the foot point's uncertainty, scaled to metres near
 
 
@@ -75,7 +84,7 @@ class IdentityTracker:
             if free:
                 centre = np.array([COURT_W / 2, NET_Y * (0.5 + side)])
                 taken = [slots[r].predict(t) for r in live]
-                spare = [i for i in cand if i not in matched.values()
+                spare = [i for i in cand if i not in matched.values() and _between_lines(dets[i])
                          and all(np.hypot(*(dets[i]["xy"] - q)) > MIN_SEP_M for q in taken)]
                 spare = sorted(spare, key=lambda i: np.hypot(*(dets[i]["xy"] - centre)))[:len(free)]
                 spare.sort(key=lambda i: dets[i]["xy"][0])  # both new at once: left gets the lower id
@@ -114,6 +123,8 @@ class IdentityTracker:
     def _gate(s, t, d):
         """Within reach: BASE_GATE_M + MAX_SPEED per second unseen, plus 3 sd of the foot point's
         own uncertainty (metres per pixel grow ~d^2 towards the far baseline, along the depth)."""
+        if t - s.t > MAX_COAST_S and not _between_lines(d):
+            return False
         r = BASE_GATE_M + MAX_SPEED * (t - s.t)
         e = d["xy"] - s.predict(t)
         S = np.eye(2) * r * r + 9 * d.get("cov", np.zeros((2, 2)))
@@ -141,6 +152,11 @@ class IdentityTracker:
         h = d.get("hist")
         if h is not None:
             s.hist = h if s.hist is None else (0.8 * s.hist + 0.2 * h).astype(np.float32)
+
+
+def _between_lines(d):
+    x, y = d["xy"]
+    return -REACQ_M[0] < x < COURT_W + REACQ_M[0] and -REACQ_M[1] < y < COURT_L + REACQ_M[1]
 
 
 def torso_hist(frame, box):
@@ -185,6 +201,18 @@ def fill_skipped(df, times, stride):
         g["timestamp"] = np.round(times, 4)
         out.append(g[g.x_m.notna()].reset_index(names="frame"))
     return pd.concat(out, ignore_index=True).sort_values(["frame", "player_id"], ignore_index=True)
+
+
+def keep_on_side(df):
+    """Nobody crosses the net and nobody plays from the stands: positions are held to the
+    player's own half, within the margins the tracker accepts (a jump at the net projects the
+    feet past it; the court map then showed a near player in the far half)."""
+    if df.empty:
+        return df
+    side = df.player_id.map({p: s for p, _, s in SLOTS}).to_numpy()
+    df["y_m"] = np.clip(df.y_m, np.where(side == 0, -NEAR_END_MARGIN_M, NET_Y), np.where(side == 0, NET_Y, COURT_L + END_MARGIN_M))
+    df["x_m"] = df.x_m.clip(-SIDE_MARGIN_M, COURT_W + SIDE_MARGIN_M)
+    return df
 
 
 def apply_swaps(df, path):
@@ -276,7 +304,7 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     from hud.detection.detect import player_region
     from hud.media.video import sample as key_sample
     sample = key_sample(video, (sw, sh), 12)
-    on_court = lambda q: -SIDE_MARGIN_M < q[0] < COURT_W + SIDE_MARGIN_M and -END_MARGIN_M < q[1] < COURT_L + END_MARGIN_M
+    on_court = lambda q: -SIDE_MARGIN_M < q[0] < COURT_W + SIDE_MARGIN_M and -NEAR_END_MARGIN_M < q[1] < COURT_L + END_MARGIN_M
     main = player_region(detect, sample, H, size, on_court, court_px=to_court(np.linalg.inv(H), CORNERS_M))
     detect.main_box = None if main is None else (int(main[0] / kx), int(main[1] / ky), int(main[2] / kx), int(main[3] / ky))
     print(f"Players: detecting in {main or 'the whole frame'} of a {w}x{h} frame")
@@ -302,7 +330,7 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
         feet = to_court(H, feet_px) if len(boxes) else np.zeros((0, 2))
         # feet hidden (ankles not visible) -> position unknown; the slot holds its last ground position
         inside = feet_ok & ((feet[:, 0] > -SIDE_MARGIN_M) & (feet[:, 0] < COURT_W + SIDE_MARGIN_M)
-                  & (feet[:, 1] > -END_MARGIN_M) & (feet[:, 1] < COURT_L + END_MARGIN_M))
+                  & (feet[:, 1] > -NEAR_END_MARGIN_M) & (feet[:, 1] < COURT_L + END_MARGIN_M))
         covs = foot_cov(H, feet_px, np.maximum(PX_NOISE * (boxes[:, 3] - boxes[:, 1]), PX_MIN)) if len(boxes) else []
         dets = [dict(xy=feet[i], track_id=int(ids[i]), hist=hists[i], box=boxes[i], foot=feet_px[i],
                      wrists=wrists[i], app=apps[i], cov=covs[i])
@@ -337,6 +365,7 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
         df = apply_swaps(df, swaps)
     from hud.tracking.smooth import smooth_players
     df = smooth_players(df, H)  # camera-aware: far players' depth jitter is metres per pixel
+    df = keep_on_side(df)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: rerunning the same video never duplicates rows
     obs = df.groupby("player_id")["observed"].mean().round(3).to_dict() if len(df) else {}
