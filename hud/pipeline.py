@@ -10,7 +10,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from hud import court, hits, players, rallies, shuttle
+from hud import court
+from hud.analysis import hits, rallies
+from hud.tracking import players
+from hud.detection import shuttle
 
 
 def paths(out_dir):
@@ -36,8 +39,8 @@ def _ref_time(video, calib):
     """The time the corners were set on; for corners set on the background, the frame they fit best."""
     if calib.get("t") is not None:
         return float(calib["t"])
-    from hud.check import calib_fit
-    from hud.video import probe
+    from hud.analysis.check import calib_fit
+    from hud.media.video import probe
     _, _, fps, n = probe(video)
     idx = np.linspace(0, max(n - 1, 0), 15).astype(int)
     fits = [calib_fit(frame(video, int(i)), calib["corners"])[0] for i in idx]
@@ -49,8 +52,8 @@ def prepare(video, out_dir, progress=print):
     calibrated on, so every stage sees one fixed camera; the HUD is still drawn on the original
     footage (render maps it back frame by frame). A tripod clip is left alone.
     Reused while the calibration is unchanged. -> what work() returns."""
-    from hud import stabilize
-    from hud.video import probe
+    from hud.court import stabilize
+    from hud.media.video import probe
     p = paths(out_dir)
     calib = json.loads(p["calib"].read_text())
     key = dict(src_corners=calib["corners"], src_t=calib.get("t"), src_video=str(video))
@@ -80,12 +83,12 @@ def prepare(video, out_dir, progress=print):
 
 def _stab_marks(p):
     """marks.json (clicked on the original frames) -> marks_stab.json on the stabilised view."""
-    from hud.stabilize import frame_maps
+    from hud.court.stabilize import frame_maps
     p["stab_marks"].unlink(missing_ok=True)
     if not p["marks"].exists():
         return
     M = frame_maps(p["stab"])
-    from hud.video import probe
+    from hud.media.video import probe
     fps = probe(p["stab"])[2]
     out = []
     for m in json.loads(p["marks"].read_text()):
@@ -162,12 +165,12 @@ def analyse(video, out_dir, progress=print, start="players"):
         lap("hits")
     if "rallies" in todo:
         progress(0.75, "切分回合、計分…")
-        from hud.stabilize import cuts_of
+        from hud.court.stabilize import cuts_of
         rallies.run(p["hits"], p["players"], p["shots"], p["rallies"], shuttle_path=p["shuttle"],
                     point_fixes=p["fixes"], cuts=cuts_of(wv), manual_points=p["manual"])
         lap("rallies")
     if "hud" in todo:
-        from hud import render
+        from hud.visualization import render
         progress(0.8, "產生 HUD 影片…")
         render.render(video, out_dir, progress=lambda x: progress(0.8 + 0.2 * x, "產生 HUD 影片…"))
         lap("hud")
@@ -176,7 +179,7 @@ def analyse(video, out_dir, progress=print, start="players"):
     print("Stage seconds:", took)
     warn = []
     try:  # catch the usual "everything is empty" causes (bad calibration first) and say so
-        from hud import check
+        from hud.analysis import check
         rep = check.run(out_dir)
         print(check.text(rep))
         warn = rep.get("warnings", [])

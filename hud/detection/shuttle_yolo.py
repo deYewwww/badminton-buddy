@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MODEL = ROOT / "models" / "shuttle_yolo.pt"
 TILE = 640
 MAX_GAP_S = 1.0

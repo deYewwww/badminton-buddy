@@ -43,7 +43,7 @@ uv run hud run 影片.mp4
 uv run hud stabilize 影片.mp4 --ref 63 --out data/穩定.mp4
 ```
 
-驗證準確度：照 `hud/evaluate.py` 開頭的格式寫一個 truth.json（回合起訖、得分方、擊球），然後：
+驗證準確度：照 `hud/analysis/evaluate.py` 開頭的格式寫一個 truth.json（回合起訖、得分方、擊球），然後：
 
 ```bash
 uv run hud eval out/<影片> truth.json

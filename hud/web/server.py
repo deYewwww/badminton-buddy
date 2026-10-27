@@ -19,9 +19,10 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from hud import court, pipeline, venue
+from hud import court, pipeline
+from hud.court import venue
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 UPLOADS, OUT = ROOT / "data" / "uploads", ROOT / "out"
 STATIC = Path(__file__).with_name("static")
 JOB = {"id": None, "progress": 0.0, "msg": "", "error": None, "running": False}
@@ -58,7 +59,7 @@ def motion(mid):
     f = match_dir(mid) / "match.json"
     m = json.loads(f.read_text())
     if "motion" not in m:
-        from hud.stabilize import moving
+        from hud.court.stabilize import moving
         i = info(video_of(mid))
         ref = i["frames"] // 2
         mv, shift, lost = moving(video_of(mid), ref)
@@ -298,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
                 i = info(v)
                 court.homography(np.float64(b["corners"]))  # raises on a degenerate quad
                 court.save(pipeline.paths(match_dir(mid))["calib"], v, (i["w"], i["h"]), b["corners"], t=b.get("t"))
-                from hud.check import calib_fit  # warn before a 20-minute analysis on a wrong court
+                from hud.analysis.check import calib_fit  # warn before a 20-minute analysis on a wrong court
                 fits = [calib_fit(bg_frame(mid), b["corners"])]
                 if b.get("t") is not None and float(b["t"]) >= 0:  # the frame the user aligned on
                     fits.append(calib_fit(calib_frame(mid, b["t"]), b["corners"]))

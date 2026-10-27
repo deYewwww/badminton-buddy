@@ -107,7 +107,7 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
     # this, three rallies became one 30 s "rally" and two points vanished.
     still = None
     if players is not None and len(players) and "still_s" in r:
-        from hud.players import speeds
+        from hud.tracking.players import speeds
         n = int(max(players.frame.max(), shots.frame.max())) + 1
         v = speeds(players, np.arange(n) / fps)
         tracked = np.isfinite(v).sum(0)
@@ -231,7 +231,7 @@ def pickups(rallies, shots, players, r, fps):
     """rally_ids that are someone tossing the shuttle back (see module docstring)."""
     if "speed_kmh_est" not in shots or players is None or players.empty or "pickup_max_kmh" not in r:
         return []
-    from hud.players import speeds
+    from hud.tracking.players import speeds
     n = int(max(players.frame.max(), rallies.end_frame.max())) + 1
     v = speeds(players, np.arange(n) / fps)
     out = []
@@ -282,7 +282,7 @@ def add_manual(rallies, manual, fps):
 
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
         point_fixes=None, cuts=(), manual_points=None):
-    from hud import score
+    from hud.analysis import score
     cfg = config.load(cfg_path)
     shuttle = pd.read_parquet(shuttle_path) if shuttle_path else None
     shots, rallies = build(pd.read_parquet(shots_path), pd.read_parquet(players_path), cfg, shuttle, cuts)

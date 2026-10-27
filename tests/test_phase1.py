@@ -4,8 +4,8 @@ import pandas as pd
 
 import pandas as pd
 
-from hud.players import APP_COLS, IdentityTracker, apply_marks, apply_swaps, fill_skipped
-from hud.reid import fix_identities
+from hud.tracking.players import APP_COLS, IdentityTracker, apply_marks, apply_swaps, fill_skipped
+from hud.tracking.reid import fix_identities
 
 
 def test_crossing_keeps_ids():

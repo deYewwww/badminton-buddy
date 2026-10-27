@@ -18,9 +18,9 @@ import numpy as np
 import pandas as pd
 import torch
 
-from hud.video import frames, open_video
+from hud.media.video import frames, open_video
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CKPT_DIR = ROOT / "models" / "tracknetv3"
 W, H = 512, 288           # TrackNet input size
 COOR_TH = 50 / np.hypot(W, H)  # InpaintNet output below this (normalised) = no shuttle, as upstream
@@ -48,7 +48,7 @@ def _joined(path):
 
 
 def _load_models(device):
-    from hud.tracknet.model import InpaintNet, TrackNet
+    from hud.detection.tracknet.model import InpaintNet, TrackNet
     in_dim = {"subtract": 1, "subtract_concat": 4}
     nets = []
     for name in ("TrackNet", "InpaintNet"):
@@ -139,12 +139,8 @@ def _crop(win, fw):
     return f"crop={int(fw)}:{h}:0:{y0},pad={w}:{h}:{-x0}:0:black"
 
 
-def _frames(video, every=None, win=None, fw=None):
-    return frames(video, (W, H), every or 1, rgb=True, pre=_crop(win, fw))
-
-
 def _median(video, n, win=None, fw=None):
-    from hud.video import sample
+    from hud.media.video import sample
     frames = sample(video, (W, H), MEDIAN_SAMPLES, rgb=True, pre=_crop(win, fw))
     if not frames:
         raise SystemExit(f"No frames could be read from {video}")
@@ -193,7 +189,7 @@ def idle_frames(players, times, cfg):
     idle = np.zeros(n, bool)
     if players is None or players.empty or n < 2:
         return idle
-    from hud.players import speeds
+    from hud.tracking.players import speeds
     v = speeds(players, t)                          # (players, frames), NaN = not tracked
     tracked = np.isfinite(v).sum(0)
     with np.errstate(invalid="ignore"):
@@ -231,75 +227,109 @@ def outside_airspace(xy, win, box):
     return seen & ~inside
 
 
+def _frames_multi(video, wins, fw, fh):
+    """One hardware decode for several TrackNet windows (the main view and the far-court pass):
+    each frame is decoded once, at the smallest size where every window still spans >= W px,
+    then cut out (black where a window overhangs the frame) and shrunk per window. Decoding the
+    far window separately went through software ffmpeg (crop filters) and was the slowest part
+    of the shuttle stage on a 4K iPhone clip. -> per frame, a list of (H, W, 3) RGB arrays."""
+    s = min(1.0, max(W / min(fw if w is None else w[2], fw) for w in wins))
+    dw, dh = int(round(fw * s / 2) * 2), int(round(fh * s / 2) * 2)
+    kx, ky = dw / fw, dh / fh
+    cuts = []
+    for w in wins:
+        x0, y0, ww, hh = (0, 0, fw, fh) if w is None else w
+        X0, Y0, X1, Y1 = round(x0 * kx), round(y0 * ky), round((x0 + ww) * kx), round((y0 + hh) * ky)
+        cuts.append((X0, Y0, X1, Y1))
+    for f in frames(video, (dw, dh), rgb=True):
+        out = []
+        for X0, Y0, X1, Y1 in cuts:
+            c = f[max(Y0, 0):min(Y1, dh), max(X0, 0):min(X1, dw)]
+            if (X0, Y0, X1, Y1) != (max(X0, 0), max(Y0, 0), min(X1, dw), min(Y1, dh)):
+                c = cv2.copyMakeBorder(c, max(-Y0, 0), max(Y1 - dh, 0), max(-X0, 0), max(X1 - dw, 0),
+                                       cv2.BORDER_CONSTANT, value=0)
+            out.append(cv2.resize(c, (W, H), interpolation=cv2.INTER_AREA))
+        yield out
+
+
 @torch.no_grad()
-def run_tracknet(video, batch=1, idle=None, box=None, win=None):
+def run_tracknet(video, batch=1, idle=None, box=None, wins=(None,)):
     """Every frame (feeding 60 fps footage at 30 fps lost 2 of 3 rallies on the oblique clip),
     except 8-frame windows that are wholly idle (bool per frame). Even those still run while
     the previous window saw the shuttle in its last frames: a rally the gate misjudged as
-    idle keeps being tracked for as long as the shuttle is in sight."""
+    idle keeps being tracked for as long as the shuttle is in sight.
+    wins: frame regions (x0, y0, w, h), None = the whole frame; all are tracked in one decode
+    pass. -> one DataFrame per window."""
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     (tracknet, L), (inpaintnet, L2) = _load_models(device)
     dtype = torch.float16 if device == "mps" else torch.float32  # half precision: ~6% faster, same detections
     tracknet = tracknet.to(dtype)
-    cap = open_video(video)
-    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fw, fh = cap.get(cv2.CAP_PROP_FRAME_WIDTH), cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    cap.release()
+    from hud.media.video import probe
+    fw, fh, fps, n = probe(video)  # as displayed (phone rotation applied), like the decoded frames
     stride = 1
-    full = (0, 0, fw, fh) if win is None else win  # what the normalised positions refer to
-    from hud import coreml
-    ml = coreml.tracknet()   # CoreML copy (Neural Engine), vouched for against PyTorch below
-    to_check = 30            # compare on up to this many windows, until one has a shuttle in it
-    median = np.moveaxis(_median(video, n, win, fw), -1, 0)
-    xy = []  # normalised (x, y) per frame, (0, 0) = not seen
-    windows, done, read, skipped = [], False, 0, 0
-    src = _frames(video, win=win, fw=fw)
-    while not done:
-        frames = []
-        while len(frames) < L:
-            f = next(src, None)
-            if f is None:
-                done = True
-                break
-            frames.append(np.moveaxis(f, -1, 0))
-        if frames:
-            real = len(frames)
-            read += real
-            in_sight = any(x or y for x, y in xy[-2:])  # shuttle in the previous window's last frames
-            if idle is not None and not windows and not in_sight and idle[read - real:read].all():
-                xy += [(0.0, 0.0)] * real
-                skipped += real
-                frames = []
-        if frames:
-            frames += [frames[-1]] * (L - real)  # pad the last window
-            windows.append((np.concatenate([median] + frames), real))
-        if windows and (len(windows) == batch or done):
-            stack = np.stack([w for w, _ in windows])
-            torch_heat = lambda: tracknet(torch.from_numpy(stack).to(device).to(dtype).div(255)).float().cpu().numpy()
-            if ml is not None:
-                out = ml(stack.astype(np.float32) / 255)
-                if to_check:
-                    ref = torch_heat()
-                    if not same_centres(out, ref):
-                        print("CoreML TrackNet disagrees with PyTorch: using PyTorch")
-                        ml, out, to_check = None, ref, 0
-                    elif (ref > 0.5).any():
-                        print("CoreML TrackNet matches PyTorch: using CoreML")
-                        to_check = 0
-                    else:
-                        to_check -= 1
+    from hud.detection import coreml
+    S = dict(ml=coreml.tracknet(),  # CoreML copy (Neural Engine), vouched for against PyTorch below
+             check=30)              # compare on up to this many windows, until one has a shuttle in it
+    passes = [dict(full=(0, 0, fw, fh) if w is None else w, median=np.moveaxis(_median(video, n, w, fw), -1, 0),
+                   xy=[], buf=[], windows=[], read=0, skipped=0) for w in wins]
+
+    def heatmaps(stack):
+        torch_heat = lambda: tracknet(torch.from_numpy(stack).to(device).to(dtype).div(255)).float().cpu().numpy()
+        if S["ml"] is None:
+            return torch_heat()
+        out = S["ml"](stack.astype(np.float32) / 255)
+        if S["check"]:
+            ref = torch_heat()
+            if not same_centres(out, ref):
+                print("CoreML TrackNet disagrees with PyTorch: using PyTorch")
+                S["ml"], out, S["check"] = None, ref, 0
+            elif (ref > 0.5).any():
+                print("CoreML TrackNet matches PyTorch: using CoreML")
+                S["check"] = 0
             else:
-                out = torch_heat()
-            heat = (out > 0.5).astype(np.uint8)
-            for k, (_, real) in enumerate(windows):
+                S["check"] -= 1
+        return out
+
+    def push(p, done):
+        """p["buf"]: the next <= L frames of this window (fewer only at the end)."""
+        frames_, p["buf"] = p["buf"], []
+        xy = p["xy"]
+        if frames_:
+            real = len(frames_)
+            p["read"] += real
+            in_sight = any(x or y for x, y in xy[-2:])  # shuttle in the previous window's last frames
+            if idle is not None and not p["windows"] and not in_sight and idle[p["read"] - real:p["read"]].all():
+                xy += [(0.0, 0.0)] * real
+                p["skipped"] += real
+                frames_ = []
+        if frames_:
+            frames_ += [frames_[-1]] * (L - real)  # pad the last window
+            p["windows"].append((np.concatenate([p["median"]] + frames_), real))
+        if p["windows"] and (len(p["windows"]) == batch or done):
+            heat = (heatmaps(np.stack([w for w, _ in p["windows"]])) > 0.5).astype(np.uint8)
+            for k, (_, real) in enumerate(p["windows"]):
                 for t in range(real):
                     c = _locate(heat[k, t])
                     xy.append((c[0] / W, c[1] / H) if c else (0.0, 0.0))
-            windows = []
-    if skipped:
-        print(f"TrackNet skipped {skipped}/{len(xy)} idle frames ({skipped / max(len(xy), 1):.0%})")
-    xy = np.array(xy, np.float32).reshape(-1, 2)
+            p["windows"] = []
+
+    from hud.media.video import prefetch
+    for crops in prefetch(_frames_multi(video, wins, fw, fh)):
+        for p, f in zip(passes, crops):
+            p["buf"].append(np.moveaxis(f, -1, 0))
+            if len(p["buf"]) == L:
+                push(p, False)
+    for p in passes:
+        push(p, True)
+    return [_finish(p, box, fw, fh, fps, stride, inpaintnet, L2, device) for p in passes]
+
+
+def _finish(p, box, fw, fh, fps, stride, inpaintnet, L2, device):
+    """Normalised sightings of one window -> frame pixels, InpaintNet over short occlusions."""
+    full = p["full"]
+    if p["skipped"]:
+        print(f"TrackNet skipped {p['skipped']}/{len(p['xy'])} idle frames ({p['skipped'] / max(len(p['xy']), 1):.0%})")
+    xy = np.array(p["xy"], np.float32).reshape(-1, 2)
     if box is not None:  # before InpaintNet, so it neither bridges to nor from a stray sighting
         out = outside_airspace(xy, full, box)
         xy[out] = 0
@@ -379,7 +409,7 @@ def clean(raw, times, height=1080, fps=50.0):
 
 def run(video, out, players_path=None, calib_path=None):
     from hud import config
-    from hud.video import frame_times
+    from hud.media.video import frame_times
     times = frame_times(video)
     if not times:
         raise SystemExit(f"No frames could be read from {video}")
@@ -393,27 +423,29 @@ def run(video, out, players_path=None, calib_path=None):
     box, cam = None, None
     width = cv2.VideoCapture(str(video)).get(cv2.CAP_PROP_FRAME_WIDTH)
     if calib_path and Path(calib_path).exists():
-        from hud.camera import Camera
+        from hud.court.camera import Camera
         from hud.court import load
-        from hud.hits import court_airspace
+        from hud.analysis.hits import court_airspace
         H, calib = load(calib_path)
         try:
             cam = Camera(H, calib["frame_size"])
             box = court_airspace(cam)
         except ValueError:  # calibration without a valid focal length: keep everything
             pass
-    from hud.stabilize import native_size
+    from hud.court.stabilize import native_size
     win = window(width, height, cam, native=native_size(video))
     if win is not None:
         print(f"TrackNet window {win} of a {int(width)}x{int(height)} frame")
     lens = native_size(video) or (width, height)
-    raw = run_tracknet(video, idle=idle, box=box, win=win)
     far = far_window(cam, width, height, win) if cam is not None and cfg.get("far_pass", True) else None
-    if far is not None:  # ACE clip, 30 s of play: shuttle found 52% -> 58% of frames, hits 27 -> 31
+    if far is not None:
         print(f"TrackNet far-court pass {far}")
-        raw, n = merge_far(raw, run_tracknet(video, idle=idle, box=box, win=far))
+    raws = run_tracknet(video, idle=idle, box=box, wins=[win] + ([far] if far is not None else []))
+    raw = raws[0]
+    if far is not None:  # ACE clip, 30 s of play: shuttle found 52% -> 58% of frames, hits 27 -> 31
+        raw, n = merge_far(raw, raws[1])
         print(f"Far-court pass added {n} sightings")
-    from hud import shuttle_yolo
+    from hud.detection import shuttle_yolo
     if cfg.get("yolo_fill", True) and shuttle_yolo.available():
         inside = (lambda q: cv2.pointPolygonTest(box, (float(q[0]), float(q[1])), False) >= 0) if box is not None else None
         raw, n = shuttle_yolo.fill(video, raw, fps, min(lens), inside=inside)

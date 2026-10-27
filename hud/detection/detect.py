@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 import torch
 
-MODEL = Path(__file__).resolve().parents[1] / "models" / "yolo11n-pose.pt"
+MODEL = Path(__file__).resolve().parents[2] / "models" / "yolo11n-pose.pt"
 L_WRIST, R_WRIST, L_ANKLE, R_ANKLE = 9, 10, 15, 16  # COCO keypoints
 ANKLE_CONF, WRIST_CONF = 0.5, 0.3
 
@@ -24,7 +24,7 @@ class PlayerDetector:
         # pass below wins back most of the small far players it would otherwise miss
         import sys
 
-        from hud.coreml import YOLO_ML
+        from hud.detection.coreml import YOLO_ML
         use_ml = model is None and sys.platform == "darwin" and YOLO_ML.exists()
         self.model = YOLO(str(YOLO_ML) if use_ml else (model or str(MODEL)), task="pose")
         self.imgsz, self.conf = imgsz, conf

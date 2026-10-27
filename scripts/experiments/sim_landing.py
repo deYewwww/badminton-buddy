@@ -4,10 +4,10 @@ broadcast: 6 m high), pixel noise, random loss before landing."""
 import sys, json, time
 import numpy as np
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
-from hud.camera import Camera
-from hud.hits import flight, DRAG_K
+from hud.court.camera import Camera
+from hud.analysis.hits import flight, DRAG_K
 from hud.court import COURT_W, COURT_L, NET_Y
-from hud import landing
+from hud.analysis import landing
 
 calib = json.load(open(sys.argv[1]))
 cam = Camera(np.array(calib["H"]), calib["frame_size"])

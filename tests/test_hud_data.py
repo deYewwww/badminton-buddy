@@ -7,8 +7,8 @@ from hud.court import LINES, auto_detect, homography, snap, to_court
 import pandas as pd
 
 from hud import config
-from hud import score
-from hud.rallies import build, rate
+from hud.analysis import score
+from hud.analysis.rallies import build, rate
 
 
 def synth(f=1500.0, C=(7.0, -4.0, 1.5)):
@@ -66,7 +66,7 @@ def test_auto_detect_low_resolution():
 def test_check_flags_squeezed_calibration():
     """The user's real failure: near corners pulled in to the frame edge, court squeezed
     towards the net. Line overlap alone stays high-ish; the camera check must catch it."""
-    from hud.check import calib_fit
+    from hud.analysis.check import calib_fit
     proj = synth()
     img = np.full((1080, 1920, 3), (60, 140, 40), np.uint8)
     for a, b in LINES:
@@ -83,7 +83,7 @@ def test_venue_align_after_camera_moves():
     """Venue calibrated on one frame; the match is filmed after the phone was turned ~3 degrees
     and zoomed a little (any pure rotation/zoom is a homography of the whole image). Aligned
     corners must land on the true ones; an unrelated scene must be refused."""
-    from hud import venue
+    from hud.court import venue
     proj = synth()
     rng = np.random.default_rng(0)
     img = cv2.resize(rng.integers(40, 200, (54, 96, 3), dtype=np.uint8), (1920, 1080), interpolation=cv2.INTER_NEAREST)
@@ -111,7 +111,7 @@ def test_stabilize_pan(tmp=None):
     come back shifted onto the canvas."""
     import json, tempfile, subprocess
     from pathlib import Path
-    from hud import stabilize
+    from hud.court import stabilize
     rng = np.random.default_rng(1)
     base = cv2.resize(rng.integers(30, 220, (36, 64, 3), dtype=np.uint8), (640, 360), interpolation=cv2.INTER_NEAREST)
     base = cv2.GaussianBlur(base, (3, 3), 0)
@@ -146,7 +146,7 @@ def test_stabilize_pan(tmp=None):
 
 def test_evaluate_matching():
     """Rallies matched by overlap, hits by time; winners and side counted on matches only."""
-    from hud import evaluate as E
+    from hud.analysis import evaluate as E
     pred = pd.DataFrame(dict(start_ts=[1.0, 10.0, 30.0], end_ts=[5.0, 14.0, 31.0], shot_count=[6, 3, 2],
                              point_team_final=["us", "opp", "us"]))
     truth = [dict(start=0.8, end=5.5, winner="us", shots=7), dict(start=9.5, end=15, winner="us", shots=4),

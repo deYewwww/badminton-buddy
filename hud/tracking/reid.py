@@ -12,7 +12,7 @@ If the partners don't look different enough (same kit, same build) nothing is ch
 import numpy as np
 import pandas as pd
 
-from hud.players import APP_COLS
+from hud.tracking.players import APP_COLS
 
 PAIRS = (("P1", "P2"), ("P3", "P4"))
 CLOSE_M = 1.0      # partners closer than this: IDs may have swapped -> chunk boundary

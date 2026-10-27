@@ -24,7 +24,7 @@ import numpy as np
 
 from hud import court
 
-ROOT = Path(__file__).resolve().parents[1] / "data" / "venues"
+ROOT = Path(__file__).resolve().parents[2] / "data" / "venues"
 MIN_INLIERS = 25      # feature matches that agree on one homography
 MAX_REPROJ_PX = 4.0   # RANSAC tolerance at the working size (1280 px)
 

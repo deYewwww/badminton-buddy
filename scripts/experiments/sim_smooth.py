@@ -1,9 +1,9 @@
-"""Synthetic check of hud.smooth: footwork paths -> pixels (ACE camera) + noise + jumps."""
+"""Synthetic check of hud.tracking.smooth: footwork paths -> pixels (ACE camera) + noise + jumps."""
 import sys, json
 import numpy as np, pandas as pd
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
-from hud.camera import Camera
-from hud import smooth
+from hud.court.camera import Camera
+from hud.tracking import smooth
 from hud.court import COURT_W, COURT_L, NET_Y
 
 calib = json.load(open(sys.argv[1]))  # any calib.json (a stabilised one: calib_stab.json)

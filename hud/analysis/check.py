@@ -44,7 +44,7 @@ def run(out_dir, video=None, draw=True):
     H, calib = court.load(wc)
     video = wv if wc != p["calib"] else (video or calib["video"])
     bg = background(video)
-    from hud.stabilize import native_size
+    from hud.court.stabilize import native_size
     fit, plausible = calib_fit(bg, calib["corners"], native=native_size(video))
     rep["calib"] = dict(corners=calib["corners"], on_line=round(fit, 2), camera_plausible=plausible)
     if fit < 0.3 and not plausible:
