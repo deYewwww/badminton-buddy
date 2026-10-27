@@ -145,4 +145,19 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   21 -> 17-18 vs PyTorch (fp16 noise, still vouched per video). YOLO pose: CoreML 22 ms vs MPS
   19 ms per call, no gain. Good-Badminton's yolo11s-ball (tested as a TrackNet replacement):
   mostly fires on a shuttle lying on the floor, misses the flying one, ~34 fps -> not used.
+- User's IMG_9840 review (2026-10-28): (1) passers-by right in front of the camera became 我隊1: near
+  baseline margin 1.3 -> 0.5 m, side 0.6 -> 0.3 m (players there in 0.15 % / 0.07 % of detections),
+  a slot lost > 1 s re-acquires only inside the court (REACQ_M). Clothing colour did not separate
+  them (the passer's light blue ~ our blue shirt). (2) the smoother extrapolated an unseen player
+  4 m across the net: hold before/after sightings + keep_on_side clamp. (3) speeds/types shown only
+  when hits.sure (drag_fit; others 3-409 km/h); scoring still uses all of them (hiding them dropped
+  real rallies as pick-ups). (4) point_fixes carry start_ts and are matched by time
+  (rallies.fixes_by_time; old files backfilled from the rallies.parquet they were made on).
+- Tried and dropped for rally/serve detection on IMG_9840: next rally's first hit = previous winner
+  (19/34, the serve is usually missed); player motion (walking between points ~ short rallies);
+  racket sound (neighbouring courts: 5 vs 3 onsets per 4 s, near/far hits equally loud).
+  The editor's Quick review (stop after each rally: arrows / 1-2 for missed points) covers it.
+- UI and HUD are English (user's choice, after the Thai/Korean reference videos). The shuttle is
+  drawn as a reticle + 0.5 s tail; render.fill_flights bridges <= 0.8 s gaps between a hit's contact,
+  the real sightings and the next contact (PCHIP), only on flights with >= 2 sightings.
 

@@ -551,6 +551,11 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
             if kmh is not None and kmh < 0.9 * avg:  # a shuttle only slows down: the estimate is broken
                 kmh, method = None, "rejected"
         rows.append({**h, "speed_kmh_est": None if kmh is None else round(kmh, 1), "speed_method": method,
+                     # sure: the physical flight fit held. Only those speeds and shot types are shown in
+                     # the HUD: the window fallbacks gave 3-409 km/h on the user's 4K clip (fit: 12-197)
+                     # and the types built on them were "basically all wrong". Scoring keeps using all
+                     # of them (hiding them there dropped real 2-shot rallies as pick-ups)
+                     "sure": method == "drag_fit",
                      "flight_avg_kmh_est": None if avg is None else round(avg, 1),
                      "shot_type": shot_type(c0, land, kmh, avg) if np.isfinite(land[0]) else "other",
                      "landing_x": land[0], "landing_y": land[1], "landing_kind": kind, "landing_sd": land_sd,

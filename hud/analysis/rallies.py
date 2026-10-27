@@ -280,6 +280,40 @@ def add_manual(rallies, manual, fps):
     return out.sort_values("start_ts").reset_index(drop=True)
 
 
+FIX_MATCH_S = 1.5  # a fix belongs to the detected rally starting within this of the rally it was made on
+
+
+def fixes_by_time(fixes, rallies, old_rallies_path=None, fixes_path=None):
+    """point_fixes are keyed by rally_id, which shifts when a re-analysis finds one rally more or
+    less early on: every later fix then landed on the wrong rally. Each fix also carries the
+    start_ts of the rally it was made on (the editor writes it; older files get it once from the
+    rallies.parquet they were made against, saved back) and is moved to the detected rally that
+    starts within FIX_MATCH_S of it. Fixes with no rally there any more are dropped, and listed."""
+    fixes = fixes.copy()
+    if "start_ts" not in fixes:
+        fixes["start_ts"] = np.nan
+    if fixes.start_ts.isna().any() and old_rallies_path and Path(old_rallies_path).exists():
+        old = pd.read_parquet(old_rallies_path, columns=["rally_id", "start_ts"]).set_index("rally_id").start_ts
+        miss = fixes.start_ts.isna()
+        fixes.loc[miss, "start_ts"] = fixes.loc[miss, "rally_id"].map(old)
+        if fixes_path and fixes.start_ts.notna().any():
+            fixes.to_csv(fixes_path, index=False)
+    det = rallies[~rallies.get("manual", pd.Series(False, index=rallies.index)).fillna(False).astype(bool)]
+    out, lost = [], []
+    for f in fixes.itertuples():
+        if not np.isfinite(f.start_ts):
+            out.append(dict(rally_id=int(f.rally_id), point_team=f.point_team))
+            continue
+        d = (det.start_ts - f.start_ts).abs()
+        if len(d) and d.min() <= FIX_MATCH_S:
+            out.append(dict(rally_id=int(det.rally_id.loc[d.idxmin()]), point_team=f.point_team))
+        else:
+            lost.append(f"{f.start_ts:.1f}s→{f.point_team}")
+    if lost:
+        print(f"Point fixes with no rally at that time any more (dropped): {', '.join(lost)}")
+    return pd.DataFrame(out, columns=["rally_id", "point_team"]).drop_duplicates("rally_id", keep="last")
+
+
 def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAULT, shuttle_path=None,
         point_fixes=None, cuts=(), manual_points=None):
     from hud.analysis import score
@@ -294,6 +328,8 @@ def run(shots_path, players_path, out_shots, out_rallies, cfg_path=config.DEFAUL
         rallies = add_manual(rallies, manual, fps)
     if len(rallies):
         fixes = pd.read_csv(point_fixes) if point_fixes and Path(point_fixes).exists() else None
+        if fixes is not None and len(fixes):
+            fixes = fixes_by_time(fixes, rallies, out_rallies, point_fixes)
         rallies = score.apply(rallies, cfg, fixes)
     for df, out in ((shots, out_shots), (rallies, out_rallies)):
         Path(out).parent.mkdir(parents=True, exist_ok=True)

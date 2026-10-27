@@ -71,7 +71,7 @@ def motion(mid):
 def info(video):
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
-        raise ValueError("無法讀取這個影片檔")
+        raise ValueError("Cannot read this video file")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -104,8 +104,8 @@ def run_job(mid, start):
 
 def start_job(mid, start):
     if not LOCK.acquire(blocking=False):
-        raise RuntimeError("已有一個分析在執行中，請等它完成")
-    JOB.update(id=mid, progress=0.0, msg="開始…", error=None, running=True)
+        raise RuntimeError("An analysis is already running: wait for it to finish")
+    JOB.update(id=mid, progress=0.0, msg="Starting…", error=None, running=True)
     threading.Thread(target=run_job, args=(mid, start), daemon=True).start()
 
 
@@ -114,7 +114,7 @@ def rallies(mid):
     if not p["rallies"].exists():
         return []
     r = pd.read_parquet(p["rallies"])
-    cols = ["rally_id", "start_ts", "duration_s", "shot_count", "point_team_final", "point_source",
+    cols = ["rally_id", "start_ts", "end_ts", "duration_s", "shot_count", "point_team_final", "point_source",
             "score_us", "score_opp", "winning_label", "manual"]
     r = r[[c for c in cols if c in r]]
     return json.loads(r.to_json(orient="records", force_ascii=False))
@@ -123,10 +123,14 @@ def rallies(mid):
 def set_winner(mid, rally_id, team):
     """Store a manual winner (or remove it with team='auto') in point_fixes.csv."""
     f = pipeline.paths(match_dir(mid))["fixes"]
-    fx = pd.read_csv(f) if f.exists() else pd.DataFrame(columns=["rally_id", "point_team"])
+    fx = pd.read_csv(f) if f.exists() else pd.DataFrame(columns=["rally_id", "point_team", "start_ts"])
     fx = fx[fx.rally_id != int(rally_id)]
     if team in ("us", "opp", "none"):  # none: not a real rally, no point
-        fx = pd.concat([fx, pd.DataFrame([dict(rally_id=int(rally_id), point_team=team)])])
+        # with the rally's start time: a re-analysis renumbers rallies (rallies.fixes_by_time)
+        r = pd.read_parquet(pipeline.paths(match_dir(mid))["rallies"], columns=["rally_id", "start_ts"])
+        ts = r.start_ts[r.rally_id == int(rally_id)]
+        fx = pd.concat([fx, pd.DataFrame([dict(rally_id=int(rally_id), point_team=team,
+                                               start_ts=round(float(ts.iat[0]), 3) if len(ts) else None)])])
     fx.to_csv(f, index=False)
 
 
@@ -238,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(rallies(q["id"]))
             if u.path == "/api/hud":
                 p = pipeline.paths(match_dir(q["id"]))["hud"]
-                return self._file(p, "video/mp4") if p.exists() else self._json({"error": "還沒有 HUD 影片"}, 404)
+                return self._file(p, "video/mp4") if p.exists() else self._json({"error": "No HUD video yet"}, 404)
             self._json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -277,7 +281,7 @@ class Handler(BaseHTTPRequestHandler):
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
                 corners, frac = court.auto_detect(f)
                 if corners is None:
-                    return self._json({"error": "找不到球場白線"}, 422)
+                    return self._json({"error": "No court lines found"}, 422)
                 return self._json(dict(corners=np.round(corners, 1).tolist(), on_line=round(frac, 2)))
             if u.path == "/api/calib/snap":
                 f = calib_frame(mid, b.get("t"))  # background (t < 0) has no players in front of the lines
@@ -292,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
                 ref, rc = venue.load(b["name"])
                 corners, rep = venue.align(ref, rc, bg_frame(mid))
                 if corners is None:
-                    return self._json({"error": rep.get("error", "對不起來"), **rep}, 422)
+                    return self._json({"error": rep.get("error", "Could not align"), **rep}, 422)
                 return self._json(dict(rep, corners=np.round(corners, 1).tolist()))
             if u.path == "/api/calib/save":
                 v = video_of(mid)
@@ -314,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(pipeline.names(match_dir(mid), b.get("names", {})))
             if u.path == "/api/run":
                 if not pipeline.paths(match_dir(mid))["calib"].exists():
-                    return self._json({"error": "請先校正球場"}, 400)
+                    return self._json({"error": "Calibrate the court first"}, 400)
                 start_job(mid, b.get("start", "players"))
                 return self._json({"ok": True})
             if u.path == "/api/winner":
@@ -339,14 +343,14 @@ def free_port(host, port):
 
 def serve(port=7860, lan=False, password=None):
     if lan and not password:
-        raise SystemExit("--lan 需要 --password（區網上的其他人也能連進來）")
+        raise SystemExit("--lan needs --password (others on the network can connect)")
     host = "0.0.0.0" if lan else "127.0.0.1"
     p = free_port(host, port)
     if p != port:
-        print(f"Port {port} 被占用，改用 {p}")
+        print(f"Port {port} is in use, using {p}")
     Handler.password = password
     srv = ThreadingHTTPServer((host, p), Handler)
-    print(f"打開 http://127.0.0.1:{p}" + ("（區網：用這台 Mac 的 IP）" if lan else ""), flush=True)
+    print(f"Open http://127.0.0.1:{p}" + (" (network: use this Mac's IP)" if lan else ""), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
