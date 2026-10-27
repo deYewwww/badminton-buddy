@@ -3,9 +3,9 @@ Run: uv run python tests/test_phase3.py"""
 import numpy as np
 import pandas as pd
 
-from hud.camera import Camera
+from hud.court.camera import Camera
 from hud.court import COURT_L, COURT_W, CORNERS_M, NET_Y, homography
-from hud.hits import DRAG_K, flight
+from hud.analysis.hits import DRAG_K, flight
 
 
 def low_camera():
@@ -23,7 +23,7 @@ def low_camera():
 
 
 def test_smoothing_weighs_far_jitter():
-    from hud.smooth import smooth_players
+    from hud.tracking.smooth import smooth_players
     cam, H, proj = low_camera()
     rng = np.random.default_rng(0)
     t = np.arange(300) / 30
@@ -47,7 +47,7 @@ def test_smoothing_weighs_far_jitter():
 
 def test_stamina_follows_effort():
     from hud import config
-    from hud.render import stamina_track, stroke_kinds
+    from hud.visualization.render import stamina_track, stroke_kinds
     st = config.load()["stamina"]
     F, fps = 300, 30
     step = np.zeros((F, 4))
@@ -68,15 +68,16 @@ def test_stamina_follows_effort():
 
 
 def test_point_from_landing_side():
-    from hud.rallies import decisive, in_target
+    from hud.analysis.rallies import decisive, in_target
     assert in_target(3.0, 10.0, "us") and not in_target(3.0, 5.0, "us")  # near team into the net: their loss
     assert in_target(3.0, 5.0, "opp") and not in_target(3.0, 14.0, "us")
     assert decisive(3.0, 10.0, "us", 0.3, 1.0) and not decisive(3.0, NET_Y + 0.2, "us", 0.3, 1.0)
 
 
 def test_net_error_and_leaning_guess():
-    from hud import config, score
-    from hud.rallies import build
+    from hud import config
+    from hud.analysis import score
+    from hud.analysis.rallies import build
     fps = 30
     def rally(landing_y, sd):
         shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
@@ -96,7 +97,8 @@ def test_net_error_and_leaning_guess():
 
 
 def test_guess_last_hitter_loses_unless_a_kill():
-    from hud import config, score
+    from hud import config
+    from hud.analysis import score
     r = pd.DataFrame(dict(rally_id=[1, 2, 3], start_ts=[1.0, 9.0, 20.0], point_team=[None, None, None],
                           last_hitter=["P1", "P3", "P2"], last_shot_type=["clear", "drop", "smash"]))
     out = score.apply(r, config.load())
@@ -105,7 +107,7 @@ def test_guess_last_hitter_loses_unless_a_kill():
 
 def test_floor_landing_near_a_line_is_not_called():
     from hud import config
-    from hud.rallies import build
+    from hud.analysis.rallies import build
     fps = 30
     def ends_with(landing_y, sd):
         shots = pd.DataFrame([dict(frame=f, timestamp=f / fps, team=t, turn_deg=100, player_id="P1" if t == "us" else "P3",
@@ -121,7 +123,7 @@ def test_floor_landing_near_a_line_is_not_called():
 
 
 def test_shuttle_drawn_only_in_play():
-    from hud.render import in_play_only
+    from hud.visualization.render import in_play_only
     F, fps = 300, 30
     P = np.c_[np.linspace(100, 700, F), np.full(F, 400.0)]  # flying ...
     P[200:240] = [500.0, 500.0]                             # ... held still for 1.3 s
@@ -133,8 +135,9 @@ def test_shuttle_drawn_only_in_play():
 
 
 def test_manual_point_fills_a_missed_rally():
-    from hud import config, score
-    from hud.rallies import add_manual
+    from hud import config
+    from hud.analysis import score
+    from hud.analysis.rallies import add_manual
     rallies = pd.DataFrame(dict(rally_id=[1, 2], start_frame=[30, 300], end_frame=[120, 400], start_ts=[1.0, 10.0],
                                 end_ts=[4.0, 13.3], point_team=["us", "opp"]))
     manual = pd.DataFrame(dict(t=[7.5], point_team=["us"]))
@@ -146,7 +149,7 @@ def test_manual_point_fills_a_missed_rally():
 
 
 def test_landing_predicted_from_lost_flight():
-    from hud.landing import predict
+    from hud.analysis.landing import predict
     cam, H, proj = low_camera()
     c0 = np.array([2.0, 2.0, 2.5])                      # clear from the near rear court
     u = np.array([0.05, 0.75, 0.66]); u /= np.linalg.norm(u)
@@ -163,7 +166,7 @@ def test_landing_predicted_from_lost_flight():
 
 
 def test_landing_settles_despite_tracker_wobble():
-    from hud.hits import landed_at
+    from hud.analysis.hits import landed_at
     rng = np.random.default_rng(0)
     fall = np.c_[np.full(10, 590.0), np.linspace(1000, 1180, 10)]
     lying = np.array([590.0, 1180.0]) + rng.uniform(-4, 4, (12, 2))  # 720p TrackNet wobble
@@ -174,7 +177,7 @@ def test_landing_settles_despite_tracker_wobble():
 
 
 def test_far_pass_fills_main_gaps_only():
-    from hud.shuttle import far_window, merge_far
+    from hud.detection.shuttle import far_window, merge_far
     main = pd.DataFrame(dict(Frame=range(4), Visibility=[1, 0, 1, 1], X=[10.0, 0, 30, 40], Y=[5.0, 0, 7, 8],
                              inpainted=[False, False, True, False]))
     far = pd.DataFrame(dict(Frame=range(4), Visibility=[1, 1, 1, 0], X=[11.0, 21, 31, 0], Y=[5.0, 6, 7, 0],
@@ -187,7 +190,7 @@ def test_far_pass_fills_main_gaps_only():
 
 
 def test_detector_fills_gaps_on_the_path_only():
-    from hud.shuttle_yolo import fill, gaps
+    from hud.detection.shuttle_yolo import fill, gaps
     assert gaps(np.array([1, 0, 0, 1, 1, 0, 1], bool), 2) == [(0, 3), (4, 6)]
     n = 12
     X = np.linspace(100, 650, n)
@@ -214,7 +217,7 @@ def test_detector_fills_gaps_on_the_path_only():
 
 
 def test_gap_path_follows_the_arc():
-    from hud.shuttle_yolo import gap_path
+    from hud.detection.shuttle_yolo import gap_path
     f = np.arange(20)
     P = np.c_[20.0 * f, 300 - 40 * f + 2.5 * f ** 2]   # a clear's apex seen from behind
     seen = np.ones(20, bool); seen[8:13] = False
@@ -223,7 +226,7 @@ def test_gap_path_follows_the_arc():
 
 
 def test_detector_finds_the_shuttle_lying_after_the_track_ends():
-    from hud.shuttle_yolo import fill
+    from hud.detection.shuttle_yolo import fill
     n = 60
     raw = pd.DataFrame(dict(Frame=range(n), Visibility=[1] * 10 + [0] * 50, X=np.r_[np.full(10, 400.0), np.zeros(50)],
                             Y=np.r_[np.linspace(300, 480, 10), np.zeros(50)], inpainted=False))
@@ -261,7 +264,7 @@ def test_frame_maps_hold_last_good(tmp=None):
     import json
     import tempfile
     from pathlib import Path
-    from hud.stabilize import frame_maps
+    from hud.court.stabilize import frame_maps
     d = Path(tempfile.mkdtemp())
     A = np.eye(3); A[0, 2] = 5
     (d / "s.json").write_text(json.dumps(dict(H=[None, A.tolist(), None])))

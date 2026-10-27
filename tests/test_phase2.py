@@ -2,10 +2,10 @@
 import numpy as np
 import pandas as pd
 
-from hud.camera import Camera
+from hud.court.camera import Camera
 from hud.court import CORNERS_M, homography
-from hud.hits import best_per_team, fit_speed, flight, from_window_avg, geo_fit, shot_type, turn_candidates
-from hud.shuttle import clean, idle_frames, outside_airspace, run_tracknet, same_centres
+from hud.analysis.hits import best_per_team, fit_speed, flight, from_window_avg, geo_fit, shot_type, turn_candidates
+from hud.detection.shuttle import clean, idle_frames, outside_airspace, run_tracknet, same_centres
 
 
 def synthetic_camera(f=1500.0, C=(3.05, -7.0, 6.0)):
@@ -111,7 +111,7 @@ def test_airspace_mask():
     """Shuttle over the court (even 6 m up) is kept; a white shirt in the side stands and a
     neighbouring court on the other side are dropped; an unseen frame is left alone. (Things straight behind the far
     baseline project inside the box and can't be told apart in 2-D.)"""
-    from hud.hits import court_airspace
+    from hud.analysis.hits import court_airspace
     proj, f, C = synthetic_camera()
     cam = Camera(homography([proj([*c, 0]) for c in CORNERS_M]), (1920, 1080))
     box = court_airspace(cam)
@@ -139,7 +139,7 @@ def test_coreml_vouching():
 def test_tracknet_window():
     """Landscape 16:9: whole frame. Portrait 720x1280: a 1280x720 window (training-size pixels),
     padded 280 px at each side, ending just below the court floor."""
-    from hud.shuttle import window
+    from hud.detection.shuttle import window
     assert window(1920, 1080) is None and window(1280, 720) is None
     x0, y0, w, h = window(720, 1280)
     assert (w, h) == (1280, 720) and x0 == -280 and y0 == 560

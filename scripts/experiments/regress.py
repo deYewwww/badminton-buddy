@@ -3,9 +3,10 @@ degraded copies; ACE against its play-stretch labels)."""
 import sys, io, contextlib
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2]))
 import pandas as pd
-from hud import hits, rallies, pipeline, evaluate
-from hud.evaluate import hits as ev
-from hud.stabilize import cuts_of
+from hud.analysis import hits, rallies, evaluate
+from hud import pipeline
+from hud.analysis.evaluate import hits as ev
+from hud.court.stabilize import cuts_of
 def redo(o, video=None):
     p = pipeline.paths(o); wv, wc, _ = pipeline.work(o, video or "x.mp4")
     with contextlib.redirect_stdout(io.StringIO()):

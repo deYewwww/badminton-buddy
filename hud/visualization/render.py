@@ -155,7 +155,7 @@ def lens_short(out_dir):
     """Short side (px) of the camera behind the analysed frames (the lens, for a stabilised canvas)."""
     import json
     from hud.pipeline import paths
-    from hud.stabilize import native_size
+    from hud.court.stabilize import native_size
     p = paths(out_dir)
     f = p["stab_calib"] if p["stab_calib"].exists() else p["calib"]
     try:
@@ -643,9 +643,9 @@ def to_original(box, shuttle, M):
 
 def render(video, out_dir, progress=lambda x: None):
     from hud.pipeline import paths
-    from hud.video import frames, probe
+    from hud.media.video import frames, probe
     from hud.pipeline import work
-    from hud.stabilize import frame_maps
+    from hud.court.stabilize import frame_maps
     p = paths(out_dir)
     wv, wc, _ = work(out_dir, video)
     H, calib = court.load(wc)
@@ -658,7 +658,7 @@ def render(video, out_dir, progress=lambda x: None):
     every = max(1, round(fps / MAX_OUT_FPS))  # 60 -> 30 fps; a 31.5 fps (VFR) clip keeps every frame
     S = load(out_dir, F, fps)
     if M is not None:
-        from hud.stabilize import cuts_of
+        from hud.court.stabilize import cuts_of
         M = smooth_maps(M, cuts_of(wv))
         S["box"], S["shuttle"] = to_original(S["box"], S["shuttle"], M)
     S["box"] = S["box"] * [kx, ky, kx, ky]
@@ -680,11 +680,17 @@ def render(video, out_dir, progress=lambda x: None):
                 break
             img = img.copy()  # ffmpeg's buffer is read-only
             hud.draw(img, f)
-            ff.stdin.write(img.tobytes())
+            try:
+                ff.stdin.write(img.tobytes())
+            except BrokenPipeError:  # -shortest: the audio track ended first (phone clips, trimmed copies)
+                break
             if n % 30 == 0:
                 progress(f / max(F, 1))
     finally:
-        ff.stdin.close()
+        try:
+            ff.stdin.close()
+        except BrokenPipeError:
+            pass
         ff.wait()
     if ff.returncode != 0:
         raise RuntimeError("ffmpeg failed to encode the HUD video")

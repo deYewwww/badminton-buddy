@@ -11,7 +11,7 @@ prediction where it is decisive (which half, in or out), else the rally keeps "u
 """
 import numpy as np
 
-from hud.hits import DRAG_K, FIT_PX, flight
+from hud.analysis.hits import DRAG_K, FIT_PX, flight
 
 CONTACT_SD_M = 0.3    # how far the contact estimate (hitter's vertical) may be off, per axis
 K_SD = 0.03           # shuttles differ: drag k (1/m) is fitted too, around DRAG_K with this prior sd

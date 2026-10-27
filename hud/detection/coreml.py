@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TRACKNET_ML = ROOT / "models" / "tracknetv3" / "TrackNet.mlpackage"
 YOLO_ML = ROOT / "models" / "yolo11n-pose.mlpackage"
 H, W = 288, 512
@@ -23,7 +23,7 @@ def export(imgsz=960):
     import coremltools as ct
     import torch
 
-    from hud import shuttle
+    from hud.detection import shuttle
     (net, L), _ = shuttle._load_models("cpu")
     x = torch.rand(1, (L + 1) * 3, H, W)
     traced = torch.jit.trace(net.eval(), x)
@@ -41,7 +41,7 @@ def export(imgsz=960):
         return
     from ultralytics import YOLO
 
-    from hud.detect import MODEL
+    from hud.detection.detect import MODEL
     try:  # YOLO is ~15 % of the compute; a failed export just leaves it on PyTorch
         out = Path(YOLO(str(MODEL), task="pose").export(format="coreml", imgsz=imgsz, half=True))
         if out != YOLO_ML:

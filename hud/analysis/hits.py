@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 from hud import config
-from hud.camera import Camera
+from hud.court.camera import Camera
 from hud.court import COURT_L, COURT_W, NET_Y, load, to_court
 
 ANGLE_DEG = 50        # min turn of the shuttle path at a hit
@@ -340,7 +340,7 @@ def shot_type(contact, land, kmh, avg_kmh=None):
 
 def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=(), frame_h=None):
     """img_h: the pixel scale (camera short side, 1080 at 1080p); frame_h: the frame's own height."""
-    from hud import landing
+    from hud.analysis import landing
     p = shuttle[["x_px", "y_px"]].to_numpy(float, copy=True)
     # multi-court halls: TrackNet happily follows other courts' shuttles; keep only what is
     # inside the image of the air box above our court
@@ -512,7 +512,7 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
                 # how far off that floor point may be: FLOOR_PX of pixel error (calibration,
                 # stabilisation, TrackNet's centre) through the homography at that pixel. From a
                 # 0.7 m phone that is ~0.7 m near the net, so close calls stay undecided
-                from hud.smooth import foot_cov
+                from hud.tracking.smooth import foot_cov
                 land_sd = float(np.sqrt(np.linalg.eigvalsh(foot_cov(H, [p[settled]], [FLOOR_PX * img_h / 1080])[0]).max()))
             elif last_seen is not None and not soon:  # lost in the air: carry the fitted flight to the floor
                 pts = [j for j in range(i + 1, last_seen + 1) if real[j]]
@@ -568,7 +568,7 @@ def run(shuttle_path, players_path, calib_path, out):
     H, calib = load(calib_path)
     cam = Camera(H, calib["frame_size"])
     fps = 1 / np.median(np.diff(shuttle.timestamp)) if len(shuttle) > 1 else 30
-    from hud.stabilize import cuts_of, native_size
+    from hud.court.stabilize import cuts_of, native_size
     # pixel thresholds are tuned at 1080p and scale with the camera's short side: the frame's own
     # height over-scaled a portrait clip 1.8x, and a stabilised canvas (2050 high) more, so the far
     # court's small turns never registered as hits

@@ -31,37 +31,39 @@ def main():
     c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
     if a.cmd == "eval":
-        from hud import evaluate
+        from hud.analysis import evaluate
         print(evaluate.text(evaluate.run(a.out, a.truth)))
         return
     if a.cmd == "stabilize":
-        from hud import stabilize
+        from hud.court import stabilize
         stabilize.run(a.video, a.out, a.ref)
         print(f"完成：{a.out}（在 hud web 裡打開它，於 {a.ref} 秒校正）")
         return
     if a.cmd == "venue-save":
-        from hud import court, pipeline, venue
+        from hud import court, pipeline
+        from hud.court import venue
         _, calib = court.load(pipeline.paths(a.src)["calib"])
         d = venue.save(a.name, pipeline.background(calib["video"]), calib["corners"])
         print(f"已存成場地「{a.name}」：{d}")
         return
     if a.cmd == "export-coreml":
-        from hud import coreml
+        from hud.detection import coreml
         coreml.export()
         return
     if a.cmd == "check":
-        from hud import check
+        from hud.analysis import check
         print(check.text(check.run(a.out)))
         print(f"圖：{Path(a.out) / 'check.png'}（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）")
         return
     if a.cmd == "web":
-        from hud.server import serve
+        from hud.web.server import serve
         serve(a.port, a.lan, a.password)
         return
     from hud import pipeline
     out = Path(a.out or Path("out") / Path(a.video).stem)
     if a.venue:
-        from hud import court, venue
+        from hud import court
+        from hud.court import venue
         ref, rc = venue.load(a.venue)
         bg = pipeline.background(a.video)
         corners, rep = venue.align(ref, rc, bg)

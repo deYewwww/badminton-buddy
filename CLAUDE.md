@@ -7,13 +7,18 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
 - Tests: `for f in tests/test_*.py; do uv run python $f; done` (no videos needed).
 - Pipeline: hud/pipeline.py: court (auto) -> players -> shuttle -> hits -> rallies/score -> render.
   Each stage writes out/<match>/... and overwrites on rerun.
+- Layout (Good-Badminton style packages): hud/media (video decode), hud/court (geometry in
+  __init__, camera, venue, stabilize), hud/detection (detect = players' YOLO pose, shuttle =
+  TrackNet, shuttle_yolo, coreml, tracknet/), hud/tracking (players, reid, smooth), hud/analysis
+  (hits, landing, rallies, score, check, evaluate), hud/visualization (render), hud/web (server,
+  static/). `from hud import court/config/pipeline`; everything else `from hud.<pkg> import x`.
 - The user writes in Chinese; reply in Traditional Chinese.
 - Target machine: 8 GB Apple Silicon Mac. Keep it light: hardware decode (VideoToolbox),
   nano YOLO, no multiprocess rendering. On Linux the code falls back to software ffmpeg/CPU.
 - Videos are NOT in the repo (data/, out/ are ignored). To test end-to-end in a cloud
   session, ask the user for a clip or use any fixed-camera doubles video.
 - The 136 MB TrackNet checkpoint is stored as models/tracknetv3/TrackNet_best.pt.part*
-  (GitHub 100 MB limit); hud/shuttle.py joins them on first use.
+  (GitHub 100 MB limit); hud/detection/shuttle.py joins them on first use.
 
 ## Status / known issues (2026-10-27)
 - Auto court detection: correct on the 45° test clip, a 3K MCC hall recording and a broadcast
@@ -36,7 +41,7 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
 - TrackNet on CoreML when models/tracknetv3/TrackNet.mlpackage exists (`hud export-coreml`, Mac);
   vouched for against PyTorch per video. YOLO CoreML export needs numpy <= 2.3.5
   (`uv run --with numpy==2.3.5 hud export-coreml`; with numpy 2.4 its attention block fails).
-- Venues (hud/venue.py, data/venues/): calibrate an empty-court clip once, save; a match from the
+- Venues (hud/court/venue.py, data/venues/): calibrate an empty-court clip once, save; a match from the
   same spot aligns to it (ORB homography -> court.snap -> plausibility). On the user's panning
   portrait clip it aligned 4/4 camera positions (~900 inliers, 0.3 s) where auto-detect got 2/4.
   The same alignment per segment is the way to support panning/cut videos (not built yet).
@@ -106,7 +111,7 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
 - Roboflow/HF/Google Drive downloads are blocked by this environment's network policy (the
   Roboflow MCP can search/fork/train but export links are on app.roboflow.com). GitHub release
   assets (e.g. ultralytics yolo11n.pt) and PyPI do download.
-- Frame-level shuttle detector (hud/shuttle_yolo.py, optional): models/shuttle_yolo.pt trained on
+- Frame-level shuttle detector (hud/detection/shuttle_yolo.py, optional): models/shuttle_yolo.pt trained on
   the Mac by scripts/train_shuttle.py (Roboflow Universe datasets, merged to 1 class). Fills
   TrackNet gaps <= 1 s along a quadratic path, and searches for the shuttle lying still after a
   track ends (rejected if a spare already lay there before the shot). A hosted Universe model
@@ -128,4 +133,16 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   court: on DT (landscape, camera 1.35 m) the floor-anchored window started below the far baseline:
   shuttle 48% -> 80% of frames, hits 212 (196 near : 16 far) -> 639 (390 : 249), rallies 10 -> 45.
   ACE's window is unchanged. Winners on DT still unverified (no truth yet).
+- Speed on the user's iPhone clip (2026-10-27, IMG_9840: 4K HEVC 10-bit HLG, 30 fps, 7.3 min,
+  rotation -180): 12 min 11 s end to end (stabilize 14, players 221, shuttle 278, hits 38, hud 164 s).
+  Fixed: (1) VideoToolbox frames of 10-bit clips must download as p010le (nv12 failed -> silent
+  software decode, ~60 fps on every core); (2) the hardware path ignores rotation metadata ->
+  video._turn adds hflip/vflip/transpose and probe() returns the displayed size (frames came out
+  upside down: YOLO found nobody); (3) render survives the encoder closing early (-shortest).
+  TrackNet's main + far-court windows now share one hardware decode (shuttle._frames_multi,
+  decoded in a prefetch thread); the far window used to go through software ffmpeg crop.
+  CoreML exports (models/*.mlpackage, not in git) halve TrackNet time; on a 60 s excerpt hits
+  21 -> 17-18 vs PyTorch (fp16 noise, still vouched per video). YOLO pose: CoreML 22 ms vs MPS
+  19 ms per call, no gain. Good-Badminton's yolo11s-ball (tested as a TrackNet replacement):
+  mostly fires on a shuttle lying on the floor, misses the flying one, ~34 fps -> not used.
 

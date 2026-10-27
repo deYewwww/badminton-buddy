@@ -26,7 +26,10 @@ def probe(path):
         raise SystemExit(f"Cannot read video: {path}")
     s = s[0]
     num, den = (int(x) for x in s.get("avg_frame_rate", "30/1").split("/"))
-    return int(s["width"]), int(s["height"]), num / den if den else 30.0, int(s.get("nb_read_packets", 0))
+    w, h = int(s["width"]), int(s["height"])
+    if _turn(str(path)) in (90, 270):  # as displayed (and as OpenCV / frames() return them)
+        w, h = h, w
+    return w, h, num / den if den else 30.0, int(s.get("nb_read_packets", 0))
 
 
 def frame_times(path):
@@ -38,6 +41,26 @@ def frame_times(path):
     if not t:
         raise SystemExit(f"No frames could be read from {path}")
     return list(np.array(t) - t[0])
+
+
+@lru_cache(maxsize=32)
+def _ten_bit(path):
+    """iPhone HDR clips are 10-bit HEVC: VideoToolbox frames then download as p010le, not nv12
+    (asking for nv12 fails, and the software fallback decoded 4K at ~60 fps on every core)."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    return "10" in out or "12" in out
+
+
+@lru_cache(maxsize=32)
+def _turn(path):
+    """Clockwise degrees the player turns the picture by (phone rotation metadata). The software
+    decoder applies it by itself; the hardware path does not (an upside-down iPhone clip came
+    out upside down and YOLO found nobody), so frames() adds the turn there."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream_side_data=rotation", "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    r = next((float(x) for x in out.replace(",", " ").split() if x.lstrip("-").replace(".", "").isdigit()), 0.0)
+    return int(round(-r)) % 360
 
 
 @lru_cache(maxsize=1)
@@ -58,8 +81,12 @@ def frames(path, size, every=1, rgb=False, pre=None, keys=False):
     if pre:
         sel += pre + ","
     elif _hw():
-        variants.append([*skip, "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld", "-i", str(path),
-                         "-vf", f"{sel}scale_vt=w={w}:h={h},hwdownload,format=nv12"])
+        turn = _turn(str(path))
+        sw, sh = (h, w) if turn in (90, 270) else (w, h)  # scale before turning
+        fix = {90: ",transpose=clock", 180: ",hflip,vflip", 270: ",transpose=cclock"}.get(turn, "")
+        variants.append([*skip, "-noautorotate", "-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld",
+                         "-i", str(path), "-vf", f"{sel}scale_vt=w={sw}:h={sh},hwdownload,"
+                         f"format={'p010le' if _ten_bit(str(path)) else 'nv12'}{fix}"])
     variants.append([*skip, "-i", str(path), "-vf", f"{sel}scale={w}:{h}:flags=area"])
     n = w * h * 3
     for args in variants:
@@ -87,3 +114,25 @@ def sample(path, size, n, rgb=False, pre=None):
                           "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
     keys = max(1, out.count("K"))
     return list(frames(path, size, every=max(1, keys // n), rgb=rgb, pre=pre, keys=True))[:n]
+
+
+def prefetch(gen, depth=16):
+    """Run a frame generator in a background thread, `depth` items ahead, so decoding and
+    resizing (ffmpeg, cv2: both release the GIL) overlap the model instead of alternating
+    with it. On a 4K clip the TrackNet stage spent ~15 s on each side."""
+    import queue
+    import threading
+    q, end = queue.Queue(depth), object()
+
+    def work():
+        try:
+            for x in gen:
+                q.put(x)
+        except BaseException as e:  # surfaced in the consumer
+            q.put(e)
+        q.put(end)
+    threading.Thread(target=work, daemon=True).start()
+    while (x := q.get()) is not end:
+        if isinstance(x, BaseException):
+            raise x
+        yield x

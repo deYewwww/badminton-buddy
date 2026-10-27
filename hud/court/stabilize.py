@@ -26,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from hud.video import probe
+from hud.media.video import probe
 
 SCALE = 0.5           # features are found at half size (of the working size below) ...
 FEAT_SIDE = 640       # ... and on an image no bigger than this (long side)
@@ -109,7 +109,7 @@ def homographies(video, ref_index, size=None, progress=None):
     """-> (list of (3x3 frame px -> reference px, inliers, how) per frame, cut frame indices),
     on frames of the given size (decoded and shrunk by the hardware where it can).
     progress(fraction) every 100 frames."""
-    from hud.video import frames
+    from hud.media.video import frames
     w, h, _, n = probe(video)
     size = size or (w, h)
     cap = cv2.VideoCapture(str(video))
@@ -360,8 +360,8 @@ def run(video, out, ref_time, corners=None, progress=None, max_side=MAX_SIDE):
         print(f"Floor corrected in {sum(sh > 0.5 for *_, sh in fixes)}/{len(fixes)} pieces; > 5 px at: {', '.join(big) or 'none'}")
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    from hud.render import _has_videotoolbox
-    from hud.video import frames
+    from hud.visualization.render import _has_videotoolbox
+    from hud.media.video import frames
     # Mac: the hardware encoder (the CPU one was most of the time on long clips); high bitrate, the
     # shuttle is a few pixels
     enc = (["-c:v", "h264_videotoolbox", "-b:v", "24M"] if _has_videotoolbox()

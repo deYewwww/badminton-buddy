@@ -17,8 +17,8 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 from hud.court import CORNERS_M, COURT_L, COURT_W, NET_Y, load, to_court
-from hud.smooth import PX_MIN, PX_NOISE, foot_cov
-from hud.video import frame_times, frames, probe
+from hud.tracking.smooth import PX_MIN, PX_NOISE, foot_cov
+from hud.media.video import frame_times, frames, probe
 
 # (player_id, team, side): side 0 = near half (camera side, y < NET_Y)
 SLOTS = [("P1", "us", 0), ("P2", "us", 0), ("P3", "opp", 1), ("P4", "opp", 1)]
@@ -257,7 +257,7 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     """det_fps: run the (slow) pose model this many times per second and interpolate between;
     60 fps footage at 30 halves the time, at 15 ('fast') quarters it.
     marks: marks.json from the editor (player feet clicked at some times), see pin/apply_marks."""
-    from hud.detect import PlayerDetector, far_region
+    from hud.detection.detect import PlayerDetector, far_region
 
     w, h, fps, _ = probe(video)
     size = [w, h]
@@ -273,8 +273,8 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     detect, tracker = PlayerDetector(model, imgsz), IdentityTracker()
     far = far_region(H, size)
     detect.far_box = None if far is None else (int(far[0] / kx), int(far[1] / ky), int(far[2] / kx), int(far[3] / ky))
-    from hud.detect import player_region
-    from hud.video import sample as key_sample
+    from hud.detection.detect import player_region
+    from hud.media.video import sample as key_sample
     sample = key_sample(video, (sw, sh), 12)
     on_court = lambda q: -SIDE_MARGIN_M < q[0] < COURT_W + SIDE_MARGIN_M and -END_MARGIN_M < q[1] < COURT_L + END_MARGIN_M
     main = player_region(detect, sample, H, size, on_court, court_px=to_court(np.linalg.inv(H), CORNERS_M))
@@ -329,13 +329,13 @@ def run(video, calib, out, model=None, imgsz=960, swaps=None, max_frames=None, d
     if not rows:
         raise SystemExit(f"No frames could be read from {video}")
     df = fill_skipped(pd.DataFrame(rows), times, stride)
-    from hud.camera import Camera
-    from hud.reid import fix_identities
+    from hud.court.camera import Camera
+    from hud.tracking.reid import fix_identities
     df = fix_identities(df, Camera(H, size))
     df = apply_marks(df, marks)
     if swaps:  # manual fixes go last, on top of the automatic ones
         df = apply_swaps(df, swaps)
-    from hud.smooth import smooth_players
+    from hud.tracking.smooth import smooth_players
     df = smooth_players(df, H)  # camera-aware: far players' depth jitter is metres per pixel
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: rerunning the same video never duplicates rows
