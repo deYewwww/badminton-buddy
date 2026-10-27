@@ -26,6 +26,9 @@ def main():
     vs = sub.add_parser("venue-save", help="把一個分析資料夾的校正存成場地（建議用空場影片）")
     vs.add_argument("name")
     vs.add_argument("--from", dest="src", required=True, help="分析資料夾，例如 out/空場")
+    ft = sub.add_parser("finetune", help="用網頁 ⑥ 標記的羽球微調 TrackNet（比原本準才採用）")
+    ft.add_argument("out", help="分析資料夾，例如 out/df4b66dd15")
+    ft.add_argument("--epochs", type=int, default=15)
     sub.add_parser("export-coreml", help="把 TrackNet 和 YOLO 轉成 CoreML（Mac 上跑得更快，只要做一次）")
     c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
     c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
@@ -45,6 +48,12 @@ def main():
         _, calib = court.load(pipeline.paths(a.src)["calib"])
         d = venue.save(a.name, pipeline.background(calib["video"]), calib["corners"])
         print(f"已存成場地「{a.name}」：{d}")
+        return
+    if a.cmd == "finetune":
+        from hud.detection import finetune
+        rep = finetune.run(a.out, epochs=a.epochs)
+        print(f"保留留出的標記上：微調前 {rep['before']}，微調後 {rep['after']}，"
+              + ("已採用（之後重新分析就會用新的 TrackNet；先跑 hud export-coreml 讓它變快）" if rep["kept"] else "沒有比較好，維持原本的 TrackNet"))
         return
     if a.cmd == "export-coreml":
         from hud.detection import coreml

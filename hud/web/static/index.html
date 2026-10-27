@@ -113,6 +113,15 @@
     <table><thead><tr><th>#</th><th>開始</th><th>時長</th><th>拍數</th><th>得分方</th><th>比分</th><th>落點</th></tr></thead>
       <tbody id="rallies"></tbody></table>
   </section>
+  <section id="s6" class="off">
+    <h2>⑥ 標記羽球 <span>訓練羽球追蹤用：標約 300 張，標完在終端機跑 <code>uv run hud finetune out/&lt;影片&gt;</code></span></h2>
+    <div class="row"><button id="lblStart" class="primary">開始標記</button><span id="lblMsg" class="hint"></span></div>
+    <div id="lblKeys" class="row hint" style="display:none">點畫面上羽球的中心（右上角放大鏡幫你對準）。
+      Enter = 黃圈（目前的偵測）是對的　N = 畫面裡沒有在飛的羽球　H = 羽球被擋住／看不清楚　← 上一張　→ 跳過　Esc 結束</div>
+    <div id="lblWrap" style="position:relative; border-radius:8px; overflow:hidden; background:#0a0f12">
+      <canvas id="lbl" style="cursor:crosshair"></canvas>
+      <canvas id="lblZoom" width="260" height="260" style="position:absolute; right:8px; top:8px; width:260px; border:2px solid var(--accent); border-radius:6px; display:none"></canvas></div>
+  </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -576,6 +585,7 @@ for (const [b, team] of [["#addUs", "us"], ["#addOpp", "opp"]]) $(b).onclick = a
 };
 async function showResult(done) {
   $("#s5").classList.toggle("off", !done);
+  $("#s6").classList.toggle("off", !done);
   if (!done) return;
   const src = `/api/hud?id=${M.id}&v=${Date.now()}`;
   $("#vid").src = src; $("#dl").href = src;
@@ -668,6 +678,69 @@ window.addEventListener("keydown", e => {
   if (!f) return;
   e.preventDefault(); e.stopPropagation(); f();
 }, true);
+// ---- shuttle labels for fine-tuning TrackNet (detection/finetune.py): one frame at a time,
+// click the shuttle or say there is none; every answer is saved at once.
+const LB = {on:false, list:[], k:0, labels:{}, img:new Image(), hover:null};
+const lbl = $("#lbl"), lctx = lbl.getContext("2d"), zoom = $("#lblZoom"), zctx = zoom.getContext("2d");
+function lblMsg(t) { $("#lblMsg").textContent = t; }
+function lblCount() { return Object.values(LB.labels).length; }
+function lblShow() {
+  const it = LB.list[LB.k];
+  if (!it) return lblMsg(`全部 ${LB.list.length} 張都看過了（已標 ${lblCount()} 張）。在終端機跑 uv run hud finetune out/${M.id}`);
+  lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張…載入中`);
+  LB.img.onload = () => { lblDraw(); lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張`); };
+  LB.img.src = `/api/label/frame?id=${M.id}&f=${it.f}`;
+}
+function lblScale() { return lbl.width / LB.img.naturalWidth; }
+function lblDraw() {
+  if (!LB.img.naturalWidth) return;
+  const w = $("#lblWrap").clientWidth;
+  lbl.width = w; lbl.height = Math.round(w * LB.img.naturalHeight / LB.img.naturalWidth);
+  lctx.drawImage(LB.img, 0, 0, lbl.width, lbl.height);
+  const it = LB.list[LB.k], k = lblScale(), done = LB.labels[it.f];
+  if (it.hint) { lctx.strokeStyle = "#ffd23c"; lctx.lineWidth = 2; lctx.beginPath(); lctx.arc(it.hint[0] * k, it.hint[1] * k, 14, 0, 7); lctx.stroke(); }
+  if (done) {
+    lctx.font = "16px sans-serif"; lctx.fillStyle = "#ff6b6b"; lctx.strokeStyle = "#ff6b6b"; lctx.lineWidth = 2;
+    if (done.state === "shuttle") { const x = done.x * k, y = done.y * k; lctx.beginPath(); lctx.moveTo(x - 8, y - 8); lctx.lineTo(x + 8, y + 8); lctx.moveTo(x + 8, y - 8); lctx.lineTo(x - 8, y + 8); lctx.stroke(); }
+    else lctx.fillText(done.state === "none" ? "已標：沒有羽球" : "已標：被擋住", 12, 24);
+  }
+}
+async function lblSave(state, x = 0, y = 0) {
+  const it = LB.list[LB.k];
+  await api("/api/label", {id:M.id, f:it.f, x, y, state});
+  LB.labels[it.f] = {frame:it.f, x, y, state};
+  LB.k++; lblShow();
+}
+lbl.onmousemove = e => {
+  if (!LB.on || !LB.img.naturalWidth) return;
+  const r = lbl.getBoundingClientRect(), k = lblScale();
+  const x = (e.clientX - r.left) * (lbl.width / r.width) / k, y = (e.clientY - r.top) * (lbl.height / r.height) / k;
+  LB.hover = [x, y]; zoom.style.display = "";
+  const s = 65;  // source px each way: ~4x on a 4K frame
+  zctx.imageSmoothingEnabled = false;
+  zctx.drawImage(LB.img, x - s, y - s, 2 * s, 2 * s, 0, 0, zoom.width, zoom.height);
+  zctx.strokeStyle = "#36c8f0"; zctx.lineWidth = 1; zctx.beginPath();
+  zctx.moveTo(zoom.width / 2, 0); zctx.lineTo(zoom.width / 2, zoom.height); zctx.moveTo(0, zoom.height / 2); zctx.lineTo(zoom.width, zoom.height / 2); zctx.stroke();
+};
+lbl.onmouseleave = () => { zoom.style.display = "none"; };
+lbl.onclick = () => { if (LB.on && LB.hover) lblSave("shuttle", Math.round(LB.hover[0] * 10) / 10, Math.round(LB.hover[1] * 10) / 10); };
+$("#lblStart").onclick = async () => {
+  const j = await api("/api/label/list?id=" + M.id);
+  LB.list = j.frames; LB.labels = {}; j.labels.forEach(l => LB.labels[l.frame] = l);
+  LB.k = Math.max(0, LB.list.findIndex(it => !LB.labels[it.f]));
+  LB.on = true; $("#lblKeys").style.display = ""; lblShow();
+};
+window.addEventListener("keydown", e => {
+  if (!LB.on || REV.on || document.activeElement.tagName === "INPUT") return;
+  const it = LB.list[LB.k], k = e.key;
+  const f = {Enter:() => it && it.hint && lblSave("shuttle", it.hint[0], it.hint[1]), n:() => it && lblSave("none"), N:() => it && lblSave("none"),
+    h:() => it && lblSave("hidden"), H:() => it && lblSave("hidden"), ArrowLeft:() => { LB.k = Math.max(0, LB.k - 1); lblShow(); },
+    ArrowRight:() => { LB.k = Math.min(LB.list.length, LB.k + 1); lblShow(); },
+    Escape:() => { LB.on = false; $("#lblKeys").style.display = "none"; zoom.style.display = "none"; lblMsg(`已標 ${lblCount()} 張（隨時可以繼續）。`); }}[k];
+  if (!f) return;
+  e.preventDefault(); e.stopPropagation(); f();
+}, true);
+window.addEventListener("resize", () => LB.on && lblDraw());
 const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 loadList();
 </script>

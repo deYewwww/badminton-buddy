@@ -47,12 +47,17 @@ def _joined(path):
     return path
 
 
-def _load_models(device):
+def _load_models(device, finetuned=True):
+    """finetuned: TrackNet_ft.pt (detection/finetune.py, trained on the user's own labelled frames)
+    replaces the pretrained TrackNet when it exists."""
     from hud.detection.tracknet.model import InpaintNet, TrackNet
     in_dim = {"subtract": 1, "subtract_concat": 4}
     nets = []
     for name in ("TrackNet", "InpaintNet"):
         path = _joined(CKPT_DIR / f"{name}_best.pt")
+        if name == "TrackNet" and finetuned and (CKPT_DIR / "TrackNet_ft.pt").exists():
+            path = CKPT_DIR / "TrackNet_ft.pt"
+            print("TrackNet: fine-tuned weights (TrackNet_ft.pt)")
         if not path.exists():
             raise SystemExit(f"Missing {path}. Download the TrackNetV3 checkpoints, see README.")
         ck = torch.load(path, map_location="cpu", weights_only=False)  # upstream pickles a param dict

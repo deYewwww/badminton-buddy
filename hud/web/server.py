@@ -236,6 +236,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(jpg)))
                 self.end_headers()
                 return self.wfile.write(jpg.tobytes())
+            if u.path == "/api/label/list":  # shuttle labelling (⑥): frames to label + what is done
+                from hud.detection import finetune
+                d = match_dir(q["id"])
+                lab = finetune.labels(d)
+                return self._json(dict(frames=finetune.todo(d), labels=json.loads(lab.to_json(orient="records"))))
+            if u.path == "/api/label/frame":  # one full-resolution frame
+                cap = cv2.VideoCapture(str(video_of(q["id"])))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(q["f"]))
+                ok, f = cap.read()
+                cap.release()
+                if not ok:
+                    return self._json({"error": "讀不到這一幀"}, 404)
+                ok, jpg = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.end_headers()
+                return self.wfile.write(jpg.tobytes())
             if u.path == "/api/status":
                 return self._json(JOB)
             if u.path == "/api/rallies":
@@ -324,6 +342,9 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/winner":
                 set_winner(mid, b["rally_id"], b["team"])
                 return self._json({"ok": True})
+            if u.path == "/api/label":  # {f, x, y, state: shuttle/none/hidden/remove}
+                from hud.detection import finetune
+                return self._json({"ok": True, "n": finetune.save_label(match_dir(mid), b["f"], b.get("x", 0), b.get("y", 0), b["state"])})
             if u.path == "/api/point":  # {t, team: us/opp/remove}
                 return self._json({"ok": True, "n": manual_point(mid, b["t"], b["team"])})
             self._json({"error": "not found"}, 404)
