@@ -210,6 +210,8 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
                          last_hitter=last.player_id, last_shot_type=last.shot_type, ended_on_floor=bool(landed or ended),
                          landing_x=last.landing_x if ended else np.nan, landing_y=last.landing_y if ended else np.nan,
                          landing_in=inside if ended else None, point_team=point, point_lean=lean,
+                         # the last shot's landing estimate even when it decides nothing (court map: grey)
+                         last_land_x=last.landing_x, last_land_y=last.landing_y,
                          winning_placement=last.placement if inside else None,
                          winning_label=last.placement_label if inside else ""))
     rallies = pd.DataFrame(rows)
@@ -273,7 +275,8 @@ def add_manual(rallies, manual, fps):
         f = int(round(float(m.t) * fps))
         rows.append(dict(rally_id=MANUAL_ID + k, start_frame=f, end_frame=f, start_ts=float(m.t), end_ts=float(m.t),
                          duration_s=0.0, shot_count=0, ended_on_floor=False, landing_x=np.nan, landing_y=np.nan,
-                         landing_in=None, point_team=m.point_team, winning_label="", manual=True))
+                         landing_in=None, point_team=m.point_team, winning_label="", manual=True,
+                         last_land_x=np.nan, last_land_y=np.nan))
     out = pd.concat([rallies, pd.DataFrame(rows)], ignore_index=True) if len(rallies) else pd.DataFrame(rows)
     out["manual"] = out.get("manual", False)
     out["manual"] = out.manual.astype("boolean").fillna(False).astype(bool)

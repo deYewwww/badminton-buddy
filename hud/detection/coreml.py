@@ -36,8 +36,8 @@ def export(imgsz=960):
     if tuple(int(x) for x in numpy.__version__.split(".")[:2]) > (2, 3):
         # Ultralytics' CoreML export needs numpy <= 2.3.5: with 2.4 its attention block fails to
         # convert ("only 0-dimensional arrays can be converted to Python scalars")
-        print(f"YOLO's CoreML export needs numpy <= 2.3.5 (have {numpy.__version__}): skipped, player detection "
-              f"stays on PyTorch. To export YOLO run:\n  uv run --with numpy==2.3.5 hud export-coreml")
+        print(f"YOLO 的 CoreML 匯出需要 numpy <= 2.3.5（目前 {numpy.__version__}），這次先跳過，"
+              f"球員偵測繼續用 PyTorch。要匯出 YOLO 請改用：\n  uv run --with numpy==2.3.5 hud export-coreml")
         return
     from ultralytics import YOLO
 

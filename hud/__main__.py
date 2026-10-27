@@ -4,31 +4,31 @@ from pathlib import Path
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="hud", description="Badminton HUD video maker")
+    ap = argparse.ArgumentParser(prog="hud", description="羽球 HUD 影片產生器")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    w = sub.add_parser("web", help="open the web editor")
+    w = sub.add_parser("web", help="打開網頁編輯器")
     w.add_argument("--port", type=int, default=7860)
-    w.add_argument("--lan", action="store_true", help="let phones on the same network connect (needs --password)")
+    w.add_argument("--lan", action="store_true", help="讓同網路的手機也能連（需要 --password）")
     w.add_argument("--password")
-    r = sub.add_parser("run", help="run the whole pipeline from the command line")
+    r = sub.add_parser("run", help="命令列跑完整流程")
     r.add_argument("video")
-    r.add_argument("--out", help="output folder (default out/<video name>)")
-    r.add_argument("--venue", help="calibrate from a saved venue (save one with hud venue-save)")
+    r.add_argument("--out", help="輸出資料夾（預設 out/<影片檔名>）")
+    r.add_argument("--venue", help="用存好的場地校正（先用 hud venue-save 存）")
     r.add_argument("--from", dest="start", default="players", choices=["players", "shuttle", "hits", "rallies", "hud"],
-                   help="stage to rerun from")
-    ev = sub.add_parser("eval", help="compare with hand labels: rally, hit and score accuracy")
-    ev.add_argument("out", help="analysis folder")
-    ev.add_argument("truth", help="label file truth.json (format: hud/analysis/evaluate.py)")
-    st = sub.add_parser("stabilize", help="align a panning (gimbal) video to one fixed view")
+                   help="從哪一步開始重跑")
+    ev = sub.add_parser("eval", help="和人工標記比對：回合、擊球、比分的準確度")
+    ev.add_argument("out", help="分析資料夾")
+    ev.add_argument("truth", help="標記檔 truth.json（格式見 hud/evaluate.py）")
+    st = sub.add_parser("stabilize", help="把鏡頭有轉動（雲台追蹤）的影片對齊成固定鏡頭")
     st.add_argument("video")
-    st.add_argument("--ref", type=float, required=True, help="time (s) of the reference frame (calibrate on this frame)")
-    st.add_argument("--out", required=True, help="output video, e.g. data/stable.mp4")
-    vs = sub.add_parser("venue-save", help="save an analysis folder's calibration as a venue (best from an empty-court clip)")
+    st.add_argument("--ref", type=float, required=True, help="參考畫面的秒數（在這一幀上校正）")
+    st.add_argument("--out", required=True, help="輸出影片，例如 data/穩定.mp4")
+    vs = sub.add_parser("venue-save", help="把一個分析資料夾的校正存成場地（建議用空場影片）")
     vs.add_argument("name")
-    vs.add_argument("--from", dest="src", required=True, help="analysis folder, e.g. out/empty_court")
-    sub.add_parser("export-coreml", help="convert TrackNet and YOLO to CoreML (faster on a Mac, once)")
-    c = sub.add_parser("check", help="find what went wrong in an analysis (calibration, players, shuttle, hits)")
-    c.add_argument("out", help="analysis folder, e.g. out/3fa9c1b2d4")
+    vs.add_argument("--from", dest="src", required=True, help="分析資料夾，例如 out/空場")
+    sub.add_parser("export-coreml", help="把 TrackNet 和 YOLO 轉成 CoreML（Mac 上跑得更快，只要做一次）")
+    c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
+    c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
     if a.cmd == "eval":
         from hud.analysis import evaluate
@@ -37,14 +37,14 @@ def main():
     if a.cmd == "stabilize":
         from hud.court import stabilize
         stabilize.run(a.video, a.out, a.ref)
-        print(f"Done: {a.out} (open it in hud web and calibrate at {a.ref} s)")
+        print(f"完成：{a.out}（在 hud web 裡打開它，於 {a.ref} 秒校正）")
         return
     if a.cmd == "venue-save":
         from hud import court, pipeline
         from hud.court import venue
         _, calib = court.load(pipeline.paths(a.src)["calib"])
         d = venue.save(a.name, pipeline.background(calib["video"]), calib["corners"])
-        print(f"Saved venue \"{a.name}\": {d}")
+        print(f"已存成場地「{a.name}」：{d}")
         return
     if a.cmd == "export-coreml":
         from hud.detection import coreml
@@ -53,7 +53,7 @@ def main():
     if a.cmd == "check":
         from hud.analysis import check
         print(check.text(check.run(a.out)))
-        print(f"Picture: {Path(a.out) / 'check.png'} (yellow = calibrated court, dots = detected player feet)")
+        print(f"圖：{Path(a.out) / 'check.png'}（黃線 = 校正的球場，彩色點 = 偵測到的球員腳位）")
         return
     if a.cmd == "web":
         from hud.web.server import serve
@@ -68,16 +68,16 @@ def main():
         bg = pipeline.background(a.video)
         corners, rep = venue.align(ref, rc, bg)
         if corners is None:
-            raise SystemExit(f"Applying the venue failed: {rep.get('error')} ({rep})")
+            raise SystemExit(f"套用場地失敗：{rep.get('error')}（{rep}）")
         court.save(pipeline.paths(out)["calib"], a.video, bg.shape[1::-1], corners)
-        print(f"Applied venue \"{a.venue}\": {rep}")
+        print(f"套用場地「{a.venue}」：{rep}")
     elif not pipeline.paths(out)["calib"].exists():
         calib, frac = pipeline.calibrate(a.video, out)
         if calib is None:
-            raise SystemExit("No court found: calibrate by hand in `hud web`")
-        print(f"Court auto-detected: {frac:.0%} on the white lines (adjust in `hud web` if it is off)")
+            raise SystemExit("找不到球場，請用 `hud web` 手動校正")
+        print(f"自動偵測球場：白線吻合 {frac:.0%}（不準的話用 `hud web` 調整）")
     p = pipeline.analyse(a.video, out, progress=lambda x, m: print(f"[{x:4.0%}] {m}", flush=True), start=a.start)
-    print(f"Done: {p['hud']}")
+    print(f"完成：{p['hud']}")
 
 
 if __name__ == "__main__":
