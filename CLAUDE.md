@@ -181,3 +181,9 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   white dot + 3 turning arcs (upright circle, 1.2 s a turn) + 0.25 s tail, drawn over the name tags;
   speed beside it as plain shadowed text for 1 s (was a LOCK ON box); name tags 132x34 (name + thin
   stamina bar, number only in the player panel); MOVE target = one dashed floor circle + small label.
+- Other courts' shuttles (user, 4:00 on IMG_9840: the tracker flew to the next court and back, slid to spare
+  shuttles on the floor): render.our_shuttle keeps a run of sightings only if it passes within 0.6 box heights
+  of one of our players or follows on from such a run (<= 0.4 s, at a shuttle's pace), and drops runs that
+  hardly move (floor / held); the tail never joins across a jump. Drawing only: hits still see every shuttle
+  (a false 15 km/h hit at 240.56 s sits on that jump).
+

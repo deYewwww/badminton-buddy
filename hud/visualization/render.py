@@ -49,6 +49,9 @@ PLAY_BEFORE_S, PLAY_AFTER_S = 0.3, 1.5  # ... the shuttle is drawn from this bef
 YELLOW = (40, 215, 255)      # reticle + tail (BGR)
 RING_R = 0.55                # foot ring radius (m)
 TRACK_MIN = 5                # shuttle drawn only on runs of at least this many real sightings
+OUR_REACH = 0.6              # ... that come this many box heights from one of our players (our_shuttle) ...
+OUR_LINK_S = 0.4             # ... or follow on from such a run within this long
+OUR_STILL = 0.006            # ... and move more than this fraction of the short side (not lying on the floor)
 POS_SMOOTH_S, BOX_SMOOTH_S = 0.3, 0.4  # display smoothing of feet (rings) and boxes (name tags)
 TAG_EASE = 0.35              # name tags move this fraction of the way to their new place per frame
 TAG_HOLD_S = 1.0             # ... and stay put this long when the player's box is lost
@@ -148,6 +151,7 @@ def load(out_dir, F, fps):
         rallies = rallies[~fake].reset_index(drop=True)
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
     shuttle = shown_track(sh, F, lens_short(out_dir)) if sh is not None else np.full((F, 2), np.nan)
+    shuttle = our_shuttle(shuttle, box, fps, lens_short(out_dir))
     shuttle = fill_flights(shuttle, hits, F, fps)
 
     step = np.r_[np.zeros((1, 4)), np.nan_to_num(np.hypot(*np.diff(pos, axis=0).transpose(2, 0, 1)))]
@@ -289,6 +293,64 @@ def in_play_only(shuttle, hits, fps, short=1080, before_s=PLAY_BEFORE_S, after_s
         if ok[f:f + w].all() and np.hypot(*(seg - seg.mean(0)).T).max() <= tol:
             hide[f:f + w] = True  # the whole still window, its first and last frames too
     out[hide] = np.nan
+    return out
+
+
+def runs_of(P, short, max_step=0.1):
+    """(start, end) frame ranges of P's unbroken runs; a jump over max_step of the short side in one
+    frame starts a new run (two shuttles: shown_track keeps both when each moves smoothly)."""
+    ok = np.isfinite(P[:, 0])
+    jump = np.r_[False, np.hypot(*np.diff(P, axis=0).T) > max_step * short]
+    start = ok & (~np.r_[False, ok[:-1]] | jump)
+    a = np.flatnonzero(start)
+    out = []
+    for i, f in enumerate(a):
+        g = f + 1
+        while g < len(P) and ok[g] and not start[g]:
+            g += 1
+        out.append((f, g))
+    return out
+
+
+def our_shuttle(P, box, fps, short, reach=OUR_REACH, link_s=OUR_LINK_S, still=OUR_STILL):
+    """Keep only the shuttle of our court. At 4:00 on the user's clip the tracker flew to the
+    next court's rally and back, and slid off to spare shuttles lying beside the court: TrackNet
+    sees every shuttle in view and the flight curve joined them up. A run of sightings is ours
+    when it passes within reach (box heights) of one of our four players (every flight leaves a
+    racket) or follows on from a run that is (a long clear's apex: lost at the racket), within
+    link_s and at a shuttle's pace. A run that hardly moves (spread < still of the short side)
+    is a shuttle lying on the floor or held: never drawn."""
+    out = np.full_like(P, np.nan)
+    runs = runs_of(P, short)
+    near = np.zeros(len(runs), bool)
+    for i, (a, b) in enumerate(runs):
+        q = P[a:b]
+        if np.ptp(q, axis=0).max() < still * short:
+            continue
+        bx = box[a:b]  # (n, 4 players, 4)
+        hgt = bx[..., 3] - bx[..., 1]
+        x, y = q[:, None, 0], q[:, None, 1]
+        inside = ((x > bx[..., 0] - reach * hgt) & (x < bx[..., 2] + reach * hgt)
+                  & (y > bx[..., 1] - 1.5 * reach * hgt) & (y < bx[..., 3]))
+        near[i] = inside.any()
+    keep = near.copy()
+    moving = [np.ptp(P[a:b], axis=0).max() >= still * short for a, b in runs]
+    changed = True
+    while changed:  # follow-on runs, both ways in time
+        changed = False
+        for i, (a, b) in enumerate(runs):
+            if keep[i] or not moving[i]:
+                continue
+            for j, (c, d) in enumerate(runs):
+                if not keep[j]:
+                    continue
+                for f0, f1 in ((d - 1, a), (b - 1, c)):  # kept run ends -> this starts; this ends -> kept starts
+                    gap = f1 - f0
+                    if 0 < gap <= link_s * fps and np.hypot(*(P[f1] - P[f0])) <= 0.05 * short * gap:
+                        keep[i] = changed = True
+    for (a, b), k in zip(runs, keep):
+        if k:
+            out[a:b] = P[a:b]
     return out
 
 
@@ -484,8 +546,9 @@ class Hud:
         P = self.S["shuttle"][max(0, f - int(TRAIL_S * self.fps)):f + 1]
         if not np.isfinite(P[-1, 0]):
             return
-        run = len(P) - 1  # the tail is the unbroken run ending now
-        while run > 0 and np.isfinite(P[run - 1, 0]):
+        run = len(P) - 1  # the tail is the unbroken run ending now, never across a jump
+        jump = 0.1 * min(self.W, self.Hh)
+        while run > 0 and np.isfinite(P[run - 1, 0]) and np.hypot(*(P[run] - P[run - 1])) <= jump:
             run -= 1
         Q = P[run:]
         if len(Q) >= 3:  # a smooth thin line (like the foot rings): 3-point average, drawn at sub-pixel precision
