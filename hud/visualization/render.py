@@ -406,6 +406,7 @@ class Hud:
         self.u = min(size) / 1080  # layout unit: 1 px on a 1080-wide portrait frame
         sc = S["cfg"]["score"]
         self.start_score = (sc["us"], sc["opp"])
+        self.show_score = sc.get("show", True)
 
     def draw(self, img, f):
         S, u = self.S, self.u
@@ -416,7 +417,8 @@ class Hud:
         self.tags(img, f)
         self.lock_on(img, f)
         self.top_bar(img, f)
-        self.banner(img, f)
+        if self.show_score:
+            self.banner(img, f)
         self.player_panel(img, f)
         self.court_map(img, f)
 
@@ -597,7 +599,7 @@ class Hud:
             t = rally.duration_s if rally is not None else 0.0
         else:
             t = (f - rally.start_frame) / self.fps
-        widths = [235, 235, 330, 200]
+        widths = [235, 235, 330, 200][:4 if self.show_score else 3]
         x = m
         heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "搜尋羽球", "比分"]
         for i, (wd, head) in enumerate(zip(widths, heads)):

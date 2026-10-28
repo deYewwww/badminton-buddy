@@ -40,6 +40,9 @@ far_pass = true          # second TrackNet pass zoomed on the far court, only wh
                          # frame (portrait / stabilised / low phone): +~60 % TrackNet time, more far shots
 
 [score]
+show = false             # score panel + 得分 banner in the HUD. Off while the analysis focuses on serves,
+                         # rally time, shot count, speed and shot type (user, 2026-10-28); the score is still
+                         # computed and the editor can still fix it
 # score at the start of the video (for videos that begin mid-match)
 games_us = 0
 games_opp = 0

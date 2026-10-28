@@ -18,7 +18,7 @@ def main():
                    help="從哪一步開始重跑")
     ev = sub.add_parser("eval", help="和人工標記比對：回合、擊球、比分的準確度")
     ev.add_argument("out", help="分析資料夾")
-    ev.add_argument("truth", help="標記檔 truth.json（格式見 hud/evaluate.py）")
+    ev.add_argument("truth", nargs="?", help="標記檔 truth.json（格式見 hud/analysis/evaluate.py）；不給就用網頁 ⑦ 標的擊球")
     st = sub.add_parser("stabilize", help="把鏡頭有轉動（雲台追蹤）的影片對齊成固定鏡頭")
     st.add_argument("video")
     st.add_argument("--ref", type=float, required=True, help="參考畫面的秒數（在這一幀上校正）")

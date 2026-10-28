@@ -122,6 +122,16 @@
       <canvas id="lbl" style="cursor:crosshair"></canvas>
       <canvas id="lblZoom" width="260" height="260" style="position:absolute; right:8px; top:8px; width:260px; border:2px solid var(--accent); border-radius:6px; display:none"></canvas></div>
   </section>
+  <section id="s7" class="off">
+    <h2>⑦ 標擊球 <span>做「標準答案」：用來量開球、拍數、回合時間準不準</span></h2>
+    <div class="row"><button id="hmStart" class="primary">開始標擊球</button>
+      速度 <select id="hmRate"><option>0.25</option><option selected>0.5</option><option>1</option></select>
+      <span id="hmMsg" class="hint">播原始影片（沒有 HUD，避免被畫面上的拍數影響）。</span></div>
+    <div id="hmKeys" class="row hint" style="display:none">
+      <b>S</b> 開球（發球拍到球的那一下）　<b>空白鍵</b> 擊球（之後每一拍）　<b>E</b> 回合結束（球落地／死球）
+      ｜ <b>P</b> 暫停／播放　<b>←</b> 倒退 2 秒　<b>Backspace</b> 刪掉上一個標記　<b>Esc</b> 結束</div>
+    <video id="hmv" playsinline style="display:none"></video>
+  </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -586,6 +596,7 @@ for (const [b, team] of [["#addUs", "us"], ["#addOpp", "opp"]]) $(b).onclick = a
 async function showResult(done) {
   $("#s5").classList.toggle("off", !done);
   $("#s6").classList.toggle("off", !done);
+  $("#s7").classList.toggle("off", !done);
   if (!done) return;
   const src = `/api/hud?id=${M.id}&v=${Date.now()}`;
   $("#vid").src = src; $("#dl").href = src;
@@ -744,6 +755,48 @@ window.addEventListener("keydown", e => {
   e.preventDefault(); e.stopPropagation(); f();
 }, true);
 window.addEventListener("resize", () => LB.on && lblDraw());
+// ---- hit marks (answer key): serve S / hit space / end E on the original video, saved per press.
+const HM = {on:false, marks:[]};
+const hmv = $("#hmv");
+function hmMsg(t) { $("#hmMsg").textContent = t; }
+function hmStatus() {
+  const m = HM.marks, s = [...m].reverse().find(x => x.kind === "serve");
+  const done = m.filter(x => x.kind === "end").length;
+  if (!s) return hmMsg(`已標 ${done} 個回合。等開球就按 S。`);
+  const open = !m.some(x => x.kind === "end" && x.t > s.t);
+  const shots = 1 + m.filter(x => x.kind === "hit" && x.t > s.t).length;
+  hmMsg(open ? `回合進行中：${fmt(s.t)} 開球，第 ${shots} 拍。　已完成 ${done} 個回合` : `已完成 ${done} 個回合。等下一次開球按 S。`);
+}
+async function hmMark(kind) {
+  const t = hmv.currentTime;
+  HM.marks = await api("/api/hitmark", {id:M.id, t, kind});
+  hmStatus();
+}
+async function hmUndo() {
+  const last = HM.marks.filter(x => x.t <= hmv.currentTime + 0.05).pop();
+  if (!last) return hmMsg("沒有可以刪的標記。");
+  HM.marks = await api("/api/hitmark", {id:M.id, t:last.t, kind:"remove"});
+  hmMsg(`已刪掉 ${fmt(last.t)} 的標記。`);
+}
+$("#hmStart").onclick = async () => {
+  HM.marks = await api("/api/hitmarks?id=" + M.id);
+  hmv.style.display = ""; hmv.controls = true;
+  hmv.onerror = () => { hmv.onerror = null; hmv.src = `/api/hud?id=${M.id}`; hmMsg("瀏覽器播不了原始影片，改用 HUD 影片（請不要看畫面上的拍數）。"); };
+  if (!hmv.src.includes("/api/")) hmv.src = `/api/video?id=${M.id}`;
+  hmv.playbackRate = +$("#hmRate").value;
+  HM.on = true; $("#hmKeys").style.display = ""; hmStatus();
+};
+$("#hmRate").onchange = () => { hmv.playbackRate = +$("#hmRate").value; };
+hmv.onplay = () => { hmv.playbackRate = +$("#hmRate").value; };
+window.addEventListener("keydown", e => {
+  if (!HM.on || REV.on || LB.on || document.activeElement.tagName === "INPUT") return;
+  const f = {s:() => hmMark("serve"), S:() => hmMark("serve"), " ":() => hmMark("hit"), e:() => hmMark("end"), E:() => hmMark("end"),
+    p:() => hmv.paused ? hmv.play() : hmv.pause(), P:() => hmv.paused ? hmv.play() : hmv.pause(),
+    ArrowLeft:() => { hmv.currentTime = Math.max(0, hmv.currentTime - 2); }, Backspace:hmUndo,
+    Escape:() => { HM.on = false; hmv.pause(); $("#hmKeys").style.display = "none"; hmMsg(`已標 ${HM.marks.filter(x => x.kind === "end").length} 個回合（都存好了，隨時可以繼續）。`); }}[e.key];
+  if (!f) return;
+  e.preventDefault(); e.stopPropagation(); f();
+}, true);
 const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, "0")}`;
 loadList();
 </script>

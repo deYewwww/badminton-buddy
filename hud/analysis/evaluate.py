@@ -23,6 +23,24 @@ import numpy as np
 import pandas as pd
 
 HIT_TOL_S = 0.25
+
+
+def truth_from_marks(path):
+    """hit_marks.csv from the editor's ⑦ (t, kind: serve / hit / end) -> a truth dict: each serve
+    starts a rally, the hits after it are its shots, the next end closes it. Marks outside a
+    serve..end pair are ignored; hit_windows are the marked rallies (only there hits count)."""
+    df = pd.read_csv(path).sort_values("t")
+    rallies, hits, cur = [], [], None
+    for r in df.itertuples():
+        if r.kind == "serve":
+            cur = dict(start=float(r.t), hits=[float(r.t)])
+        elif r.kind == "hit" and cur is not None:
+            cur["hits"].append(float(r.t))
+        elif r.kind == "end" and cur is not None:
+            rallies.append(dict(start=cur["start"], end=float(r.t), winner=None, shots=len(cur["hits"])))
+            hits += [dict(t=t, team=None) for t in cur["hits"]]
+            cur = None
+    return dict(rallies=rallies, hits=hits, hit_windows=[[r["start"] - 0.3, r["end"] + 0.3] for r in rallies])
 RALLY_IOU = 0.3
 
 
@@ -109,9 +127,10 @@ def consistency(shuttle, hits, windows):
                 same_side_in_a_row=same, same_side_rate=round(same / max(len(inside) - 1, 1), 3))
 
 
-def run(out_dir, truth_path):
+def run(out_dir, truth_path=None):
+    """truth_path: a truth JSON, or None for the editor's hand marks (out_dir/hit_marks.csv)."""
     out_dir = Path(out_dir)
-    truth = json.loads(Path(truth_path).read_text())
+    truth = truth_from_marks(out_dir / "hit_marks.csv") if truth_path is None else json.loads(Path(truth_path).read_text())
     rp = out_dir / "rallies.parquet"
     pr = pd.read_parquet(rp) if rp.exists() else pd.DataFrame()
     if pr.empty:

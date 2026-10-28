@@ -145,7 +145,12 @@ def build(out_dir, seed=0):
     medians = [np.moveaxis(S._median(video, n, w, fw), -1, 0) for w in wins]
     rng = np.random.default_rng(seed)
     hold = rng.random(len(lab)) < HOLDOUT
-    X, Y, K, HO, LBL = [], [], [], [], []
+    # written to disk one sample at a time (room for every label in every view, the unused tail
+    # is cut off by the count saved with them): collected in a list first, 600 samples plus the
+    # stacked copy (~5 GB) swapped the 8 GB Mac to a standstill
+    X = np.lib.format.open_memmap(paths(out_dir)["X"], mode="w+", dtype=np.uint8,
+                                  shape=(len(lab) * len(wins), (8 + 1) * 3, S.H, S.W))
+    Y, K, HO, LBL = [], [], [], []
     cap = cv2.VideoCapture(str(video))
     for i, r in lab.iterrows():
         k = int(rng.integers(0, 8))  # the labelled frame's place in the window
@@ -172,16 +177,17 @@ def build(out_dir, seed=0):
             else:
                 q = None
             crop = [_cut(fr, win, fw, fh) for fr in frames]
-            X.append(np.concatenate([med] + [np.moveaxis(c, -1, 0) for c in crop]).astype(np.uint8))
+            X[len(Y)] = np.concatenate([med] + [np.moveaxis(c, -1, 0) for c in crop])
             Y.append(q if q is not None else (np.nan, np.nan))
             K.append(k)
             HO.append(hold[i])
             LBL.append(i)
     cap.release()
+    X.flush()
+    del X
     out = paths(out_dir)["samples"]
-    np.save(paths(out_dir)["X"], np.stack(X))
-    np.savez(out, Y=np.array(Y, np.float32), K=np.array(K), hold=np.array(HO), label=np.array(LBL))
-    print(f"Built {len(X)} samples from {len(lab)} labels ({int(np.sum(HO))} held out) -> {out}")
+    np.savez(out, Y=np.array(Y, np.float32), K=np.array(K), hold=np.array(HO), label=np.array(LBL), n=len(Y))
+    print(f"Built {len(Y)} samples from {len(lab)} labels ({int(np.sum(HO))} held out) -> {out}")
     return out
 
 
@@ -239,7 +245,8 @@ def _samples(p):
         np.save(p["X"], d["X"])
         np.savez(p["samples"], **{k: d[k] for k in d.files if k != "X"})
         d = np.load(p["samples"])
-    return np.load(p["X"], mmap_mode="r"), d["Y"], d["K"], d["hold"]
+    n = int(d["n"]) if "n" in d.files else len(d["Y"])
+    return np.load(p["X"], mmap_mode="r")[:n], d["Y"], d["K"], d["hold"]
 
 
 def run(out_dir, epochs=6, lr=1e-4, bs=2, seed=0):
