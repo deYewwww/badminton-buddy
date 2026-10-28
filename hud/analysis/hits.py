@@ -625,6 +625,38 @@ def add_serves(df, shuttle, players, fps):
     return df
 
 
+SMASH_VY = 5.0         # shown_type: image speed downwards over the 6 frames after the hit (px/frame per
+SMASH_Z_M = 1.4       # 1000 px of frame height) and contact height for a smash. On the user's 58 typed hits
+                      # found by the detector: 6 of 10 smashes, 2 others (a lift, a drop) wrongly. The rule
+                      # types were right 9 % of the time and a classifier for all 6 types barely beat "always
+                      # lift" (60 vs 57 %), so only the smash is shown
+LINE_SIDE_M = 0.8     # line_of: hitter and receiver must each stand this far from the centre line
+
+
+def shown_types(df, shuttle, frame_h):
+    """shown_type ("smash" or None) and line ("straight" / "cross" / None) per hit, for the HUD."""
+    if df.empty:
+        return df
+    real = (shuttle.visible & ~shuttle.interpolated & ~shuttle.inpainted).to_numpy()
+    P = np.where(real[:, None], shuttle[["x_px", "y_px"]].to_numpy(float), np.nan)
+    vy = []
+    for f in df.frame.astype(int):
+        seg = P[f + 1:f + 7]
+        ok = np.flatnonzero(np.isfinite(seg[:, 0]))
+        vy.append((seg[ok[-1], 1] - seg[ok[0], 1]) / (ok[-1] - ok[0]) / frame_h * 1000 if len(ok) >= 2 else np.nan)
+    df = df.copy()
+    df["vy_out"] = np.round(vy, 2)
+    df["shown_type"] = np.where((df.vy_out > SMASH_VY) & (df.contact_z_m > SMASH_Z_M), "smash", None)
+    # straight / cross (a guess): where this shot was hit from vs where it was played next (or landed),
+    # left / right of the centre line; too near the centre: no call
+    nxt_x = df.contact_x_m.shift(-1).where(df.timestamp.shift(-1) - df.timestamp < MISSED_HIT_S)
+    tgt = nxt_x.fillna(df.landing_x)
+    a, b = df.contact_x_m - COURT_W / 2, tgt - COURT_W / 2
+    sure = (a.abs() > LINE_SIDE_M) & (b.abs() > LINE_SIDE_M)
+    df["line"] = np.where(sure & (a * b > 0), "straight", np.where(sure & (a * b < 0), "cross", None))
+    return df
+
+
 def run(shuttle_path, players_path, calib_path, out):
     shuttle, players = pd.read_parquet(shuttle_path), pd.read_parquet(players_path)
     H, calib = load(calib_path)
@@ -637,7 +669,7 @@ def run(shuttle_path, players_path, calib_path, out):
     lens = native_size(calib["video"]) or calib["frame_size"]
     df = detect(shuttle, players, H, cam, fps, min(lens), config.load()["rally"]["serve_answer_s"],
                 cuts=cuts_of(calib["video"]), frame_h=calib["frame_size"][1])
-    df = add_serves(df, shuttle, players, fps)
+    df = shown_types(add_serves(df, shuttle, players, fps), shuttle, calib["frame_size"][1])
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     print(f"Wrote {out}: {len(df)} hits")

@@ -620,10 +620,16 @@ class Hud:
                 if sure(shot):
                     w = put(img, f"{shot.speed_kmh_est:.0f}", 38 * u, WHITE, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 26 * u + w, vy + 14 * u)
-                    put(img, TYPE_LABEL.get(shot.shot_type, ""), 24 * u, (140, 255, 200), x + wd - 14 * u, vy + 8 * u, "rt")
                 else:
                     put(img, "---", 38 * u, GREY, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 110 * u, vy + 14 * u)
+                if shot is not None:  # only the smash is called (see hits.shown_types); the line is a guess
+                    kind = TYPE_LABEL.get(getattr(shot, "shown_type", None) or "", "")
+                    line = {"straight": "直線", "cross": "斜線"}.get(getattr(shot, "line", None) or "", "")
+                    if kind:
+                        put(img, kind, 24 * u, (140, 255, 200), x + wd - 14 * u, vy - 4 * u, "rt")
+                    if line:
+                        put(img, f"{line}（推測）", 17 * u, GREY, x + wd - 14 * u, vy + 26 * u, "rt")
             else:
                 us, opp = self.score_at(f)
                 w = put(img, f"{us}", 38 * u, S["colors"]["P1"], x + 16 * u, vy)
