@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 HIT_TOL_S = 0.25
-LAG_NEAR_S = 0.6      # marking_lag: pairs further apart than this are misses, not lag
+LAG_SPAN_S, LAG_TOL_S = 1.0, 0.1  # marking_lag: delays searched, and how close a mark must sit to count
 
 
 def truth_from_marks(path):
@@ -84,13 +84,22 @@ def rallies(pred, truth):
     return out
 
 
-def marking_lag(pred_t, truth_t, near=LAG_NEAR_S):
-    """Median (detected - marked) over the truth hits with a detection within `near` s: hits marked
-    by key press in real time carry the marker's reaction (on the user's serve at 74.2 s the mark
-    came 0.2 s after contact), while frame-labelled datasets allow +-2 frames. Shifting the marks
-    by this before matching keeps a steady human delay from counting as detector error."""
-    d = [pred_t[np.abs(pred_t - t).argmin()] - t for t in truth_t] if len(pred_t) else []
-    d = [x for x in d if abs(x) <= near]
+def marking_lag(pred_t, truth_t, span=LAG_SPAN_S, tol=LAG_TOL_S):
+    """Steady (detected - marked) delay: hits marked by key press in real time carry the marker's
+    reaction. It is the shift within +-span that lines up the most marks with a detection (within
+    tol), refined to the median difference of those pairs. Shifting the marks by it before
+    matching keeps a steady human delay from counting as detector error. (The median over each
+    mark's nearest detection it replaces locked onto neighbouring hits once the delay neared half a
+    hit interval: on the user's clip it said +0.04 s for marks 0.47 s late.)"""
+    pred_t, truth_t = np.asarray(pred_t, float), np.asarray(truth_t, float)
+    if len(pred_t) < 5 or len(truth_t) < 5:
+        return 0.0
+    gap = lambda lag: np.abs(pred_t[None, :] - (truth_t[:, None] + lag)).min(1)
+    lags = np.round(np.arange(-span, span + 1e-9, 0.01), 2)
+    n = np.array([(gap(x) <= tol).sum() for x in lags])
+    lag = lags[n == n.max()][np.argmin(np.abs(lags[n == n.max()]))]  # ties: the smallest delay
+    d = pred_t[np.abs(pred_t[None, :] - (truth_t[:, None] + lag)).argmin(1)] - truth_t
+    d = d[np.abs(d - lag) <= tol]
     return float(np.median(d)) if len(d) >= 5 else 0.0
 
 

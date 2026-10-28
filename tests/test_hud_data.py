@@ -158,6 +158,16 @@ def test_evaluate_matching():
     assert (h["right_side"], h["wrong_side"], h["missed"], h["extra"]) == (2, 1, 1, 0)  # the 7.0 s hit is outside the window
 
 
+def test_marking_lag_large_delay():
+    """Marks 0.47 s late on hits 0.5-1.2 s apart (the user's clip): the nearest-pair median used to
+    pair marks with the next hit and report ~0; the shift search finds the delay."""
+    from hud.analysis.evaluate import marking_lag
+    rng = np.random.default_rng(0)
+    true = np.cumsum(rng.uniform(0.5, 1.2, 200))
+    lag = marking_lag(true + rng.normal(0, 0.03, 200), true + 0.47 + rng.normal(0, 0.05, 200))
+    assert abs(lag + 0.47) < 0.03, lag
+
+
 def test_placement():
     assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
     assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court
