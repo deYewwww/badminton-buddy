@@ -256,7 +256,8 @@ def run(out_dir, epochs=6, lr=1e-4, bs=2, seed=0):
     0.54); later epochs risk learning the labels by heart."""
     import torch
     p = paths(out_dir)
-    if not p["samples"].exists() or p["labels"].stat().st_mtime > p["samples"].stat().st_mtime:
+    if (not p["samples"].exists() or not p["X"].exists()  # ft_X.npy (~2 GB) may be deleted to free space
+            or p["labels"].stat().st_mtime > p["samples"].stat().st_mtime):
         build(out_dir, seed)  # new labels since the samples were built
     X, Y, K, hold = _samples(p)
     ho = np.flatnonzero(hold)
