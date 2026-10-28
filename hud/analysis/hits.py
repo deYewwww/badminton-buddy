@@ -568,6 +568,63 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
     return df
 
 
+SERVE_GAP_S = 2.5     # a hit after this long without one opens play: look for the serve before it
+SERVE_LOOK_S = 2.0    # ... in the flight that came in, up to this long back
+SERVE_RUN_MIN = 4     # ... which must have at least this many real sightings
+SERVE_LEAD_S = 0.2    # ... and start at least this long before that hit
+
+
+def add_serves(df, shuttle, players, fps):
+    """The serve is mostly missed: on the user's 16 hand-marked rallies the first hit found came
+    0.7-0.9 s after the marked serve (the return), so rallies started late and a shot short, and
+    the 1-2 shot ones were dropped as noise. The serve is where the flight into that first hit
+    began: walk back over the real sightings before it (gaps up to 3 frames) and put a hit by the
+    other side at the start of that run (the shuttle shows a frame or so after leaving the racket;
+    at contact it is often behind the server). No run, no serve: nothing is invented."""
+    if df.empty:
+        return df
+    real = (shuttle.visible & ~shuttle.interpolated & ~shuttle.inpainted).to_numpy()
+    px = shuttle[["x_px", "y_px"]].to_numpy(float)
+    ts = shuttle.timestamp.to_numpy(float)
+    df = df.sort_values("frame").reset_index(drop=True)
+    first = np.r_[True, np.diff(df.timestamp.to_numpy()) > SERVE_GAP_S]
+    add = []
+    obs = players[players.observed.astype(bool) & players.box_x1.notna()]
+    for i in np.flatnonzero(first):
+        h = df.iloc[i]
+        f1, k, start, gap = int(h.frame), int(h.frame) - 1, None, 0
+        while k > 0 and ts[f1] - ts[k] < SERVE_LOOK_S:
+            if real[k]:
+                start, gap = k, 0
+            else:
+                gap += 1
+                if gap > 3 and start is not None:
+                    break
+            k -= 1
+        if start is None or real[start:f1].sum() < SERVE_RUN_MIN or ts[f1] - ts[start] < SERVE_LEAD_S:
+            continue
+        fs = max(0, start - 1)
+        team = "opp" if h.team == "us" else "us"
+        cand = obs[(obs.team == team) & (obs.frame.between(fs - 3, fs + 3))]
+        if len(cand):  # the server: their player nearest where the shuttle first shows
+            c = np.c_[(cand.box_x1 + cand.box_x2) / 2, (cand.box_y1 + cand.box_y2) / 2]
+            pid = cand.player_id.iat[int(np.argmin(np.hypot(*(c - px[start]).T)))]
+        else:
+            pid = "P1" if team == "us" else "P3"
+        row = {c: np.nan for c in df.columns}
+        row.update(frame=fs, timestamp=round(float(ts[fs]), 4), player_id=pid, team=team,
+                   shuttle_x_px=px[start, 0], shuttle_y_px=px[start, 1], shot_type="serve", landing_kind="intercept",
+                   end_frame=f1, speed_method="serve", sure=False, serve=True, turn_deg=0.0)
+        add.append(row)
+    if "serve" not in df:
+        df["serve"] = False
+    if add:
+        df = pd.concat([df, pd.DataFrame(add)], ignore_index=True).sort_values("frame", ignore_index=True)
+        df["shot_no"] = np.arange(1, len(df) + 1)
+    print(f"Serves recovered before {len(add)} of {int(first.sum())} openings")
+    return df
+
+
 def run(shuttle_path, players_path, calib_path, out):
     shuttle, players = pd.read_parquet(shuttle_path), pd.read_parquet(players_path)
     H, calib = load(calib_path)
@@ -580,6 +637,7 @@ def run(shuttle_path, players_path, calib_path, out):
     lens = native_size(calib["video"]) or calib["frame_size"]
     df = detect(shuttle, players, H, cam, fps, min(lens), config.load()["rally"]["serve_answer_s"],
                 cuts=cuts_of(calib["video"]), frame_h=calib["frame_size"][1])
+    df = add_serves(df, shuttle, players, fps)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     print(f"Wrote {out}: {len(df)} hits")

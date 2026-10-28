@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 HIT_TOL_S = 0.25
+LAG_NEAR_S = 0.6      # marking_lag: pairs further apart than this are misses, not lag
 
 
 def truth_from_marks(path):
@@ -82,13 +83,23 @@ def rallies(pred, truth):
     return out
 
 
-def hits(pred, truth, windows):
-    """pred: hits.parquet frame (timestamp, team)."""
+def marking_lag(pred_t, truth_t, near=LAG_NEAR_S):
+    """Median (detected - marked) over the truth hits with a detection within `near` s: hits marked
+    by key press in real time carry the marker's reaction (on the user's serve at 74.2 s the mark
+    came 0.2 s after contact), while frame-labelled datasets allow +-2 frames. Shifting the marks
+    by this before matching keeps a steady human delay from counting as detector error."""
+    d = [pred_t[np.abs(pred_t - t).argmin()] - t for t in truth_t] if len(pred_t) else []
+    d = [x for x in d if abs(x) <= near]
+    return float(np.median(d)) if len(d) >= 5 else 0.0
+
+
+def hits(pred, truth, windows, lag=0.0):
+    """pred: hits.parquet frame (timestamp, team); lag: added to the truth times (marking_lag)."""
     inside = lambda t: any(a <= t <= b for a, b in windows)
     P = pred[[inside(t) for t in pred.timestamp]]
     used, right, wrong = set(), 0, 0
     for t in truth:
-        d = np.abs(P.timestamp.to_numpy() - t["t"])
+        d = np.abs(P.timestamp.to_numpy() - (t["t"] + lag))
         order = [j for j in np.argsort(d) if d[j] <= HIT_TOL_S and j not in used]
         if order:
             j = order[0]
@@ -140,10 +151,17 @@ def run(out_dir, truth_path=None):
     if ph.empty:
         ph = pd.DataFrame(columns=["timestamp", "team"])
     sp = out_dir / "shuttle.parquet"
-    windows = [(r["start"], r["end"]) for r in truth.get("rallies", [])]
-    rep = dict(rallies=rallies(pr, truth.get("rallies", [])),
-               hits=hits(ph, truth.get("hits", []), truth.get("hit_windows", [])),
-               score=score(pr, truth.get("rallies", [])),
+    T = truth.get("rallies", [])
+    if T:  # only the stretch that was labelled: rallies found beyond it are not "extra"
+        a, b = min(r["start"] for r in T) - 5, max(r["end"] for r in T) + 5
+        pr = pr[(pr.end_ts >= a) & (pr.start_ts <= b)]
+    # the marker's steady delay, measured on the hits and taken off every mark (marking_lag)
+    lag = marking_lag(ph.timestamp.to_numpy(float), np.array([h["t"] for h in truth.get("hits", [])], float))
+    T = [dict(r, start=r["start"] + lag, end=r["end"] + lag) for r in T]
+    windows = [(r["start"], r["end"]) for r in T]
+    rep = dict(marking_lag_s=round(lag, 3), rallies=rallies(pr, T),
+               hits=hits(ph, truth.get("hits", []), [(x + lag, y + lag) for x, y in truth.get("hit_windows", [])], lag),
+               score=score(pr, T),
                consistency=consistency(pd.read_parquet(sp) if sp.exists() else None, ph, windows))
     (out_dir / "eval.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1, default=str))
     return rep
@@ -151,7 +169,8 @@ def run(out_dir, truth_path=None):
 
 def text(rep):
     r, h, s = rep["rallies"], rep["hits"], rep["score"]
-    lines = [f"回合：標記 {r['truth']}、找到 {r['found']}、多出 {r['extra']}（找到率 {r['recall']:.0%}、正確率 {r['precision']:.0%}）"]
+    lines = [f"（標記的平均延遲 {rep.get('marking_lag_s', 0):+.2f} 秒，已扣掉）",
+             f"回合：標記 {r['truth']}、找到 {r['found']}、多出 {r['extra']}（找到率 {r['recall']:.0%}、正確率 {r['precision']:.0%}）"]
     if "start_err_s" in r:
         lines.append(f"  起點誤差中位數 {r['start_err_s']} 秒、終點 {r['end_err_s']} 秒")
     if "shots_abs_err" in r:

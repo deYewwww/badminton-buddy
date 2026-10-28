@@ -57,6 +57,9 @@ def tracknet():
     """-> callable (batch, C, 288, 512) float32 in [0, 1] -> heat (batch, L, 288, 512), or None
     when not on macOS, not exported, or coremltools is missing."""
     from hud.detection.shuttle import CKPT_DIR
+    import os
+    if os.environ.get("HUD_TRACKNET_FT"):  # trying a candidate: PyTorch only, no stale CoreML copy
+        return None
     path = TRACKNET_FT_ML if (CKPT_DIR / "TrackNet_ft.pt").exists() else TRACKNET_ML  # never the stale copy
     if sys.platform != "darwin" or not path.exists():
         return None
