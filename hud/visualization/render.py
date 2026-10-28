@@ -139,6 +139,11 @@ def load(out_dir, F, fps):
     shots = pd.read_parquet(p["shots"]) if p["shots"].exists() else pd.DataFrame()
     hits = pd.read_parquet(p["hits"]) if p["hits"].exists() else None
     rallies = pd.read_parquet(p["rallies"]) if p["rallies"].exists() else pd.DataFrame()
+    if len(rallies) and "point_source" in rallies:
+        # marked "not a rally" in the editor (a toss back between points, knocking up): no rally
+        # time, shot count or speed for it in the HUD
+        fake = (rallies.point_source == "fixed") & rallies.point_team_final.isna()
+        rallies = rallies[~fake].reset_index(drop=True)
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
     shuttle = shown_track(sh, F, lens_short(out_dir)) if sh is not None else np.full((F, 2), np.nan)
     shuttle = fill_flights(shuttle, hits, F, fps)

@@ -107,8 +107,8 @@
       <span id="addMsg"></span></div>
     <div class="row"><button id="review" class="primary">快速檢查得分</button>
       速度 <select id="revRate"><option>1</option><option selected>1.5</option><option>2</option></select>
-      <span id="revMsg" class="hint">從頭播放，每個偵測到的回合結束時停下來問誰得分。</span></div>
-    <div id="revKeys" class="row hint" style="display:none"><b>停下時</b>：← 我隊　→ 對手　↓ 不算（不是一分）　Enter 用自動的　R 重播這回合
+      <span id="revMsg" class="hint">從頭播放，每個偵測到的回合結束時停下來：假回合按 ↓ 刪掉。</span></div>
+    <div id="revKeys" class="row hint" style="display:none"><b>停下時</b>：↓ 假回合（撿球、打回去、練球：刪掉）　← 我隊得分　→ 對手得分　Enter 用自動的　R 重播這回合
       ｜<b>播放中</b>：一分結束但沒停下來（漏掉的）→ 按 1 補給我隊、2 補給對手　｜ Backspace 復原上一步　Esc 結束</div>
     <table><thead><tr><th>#</th><th>開始</th><th>時長</th><th>拍數</th><th>得分方</th><th>比分</th><th>落點</th></tr></thead>
       <tbody id="rallies"></tbody></table>
@@ -607,7 +607,7 @@ async function showResult(done) {
     const auto = r.point_source === "fixed" ? "" : (r.point_team_final === "us" ? "我隊" : r.point_team_final === "opp" ? "對手" : "未知")
       + (r.point_source === "guess" ? "，推測" : r.point_source === "landing" ? "，看落點" : "");
     tr.innerHTML = `<td>${r.manual ? "＋" : r.rally_id}</td><td><a href="#" class="seek">${fmt(r.start_ts)}</a></td><td>${(r.duration_s ?? 0).toFixed(1)} 秒</td><td>${r.shot_count}</td>
-      <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">不算</option></select></td>
+      <td><select><option value="auto">自動${auto ? "（" + auto + "）" : ""}</option><option value="us">我隊</option><option value="opp">對手</option><option value="none">假回合</option></select></td>
       <td>${r.score_us ?? ""} : ${r.score_opp ?? ""}</td><td>${r.winning_label || ""}</td>`;
     const s = tr.querySelector("select");
     if (r.manual) {  // a point added by hand: only removable
@@ -626,13 +626,13 @@ async function showResult(done) {
 // points the analysis missed are added with 1 / 2 while it plays. Each answer is saved at once
 // (point_fixes.csv / manual_points.csv), so stopping half way loses nothing.
 const REV = {on:false, list:[], k:0, undo:[], timer:null};
-const TEAM = {us:"我隊", opp:"對手", none:"不算"};
+const TEAM = {us:"我隊", opp:"對手", none:"假回合（刪掉）"};
 function revMsg(t) { $("#revMsg").textContent = t; }
 function revAsk() {
   const r = REV.list[REV.k], v = $("#vid");
   v.pause(); REV.waiting = true;
   const auto = TEAM[r.point_team_final] || "未知";
-  revMsg(`回合 ${REV.k + 1}/${REV.list.length}（${fmt(r.start_ts)}–${fmt(r.end_ts)}，${r.shot_count} 拍）誰得分？自動判斷：${auto}${r.point_source === "guess" ? "（推測）" : ""}`);
+  revMsg(`回合 ${REV.k + 1}/${REV.list.length}（${fmt(r.start_ts)}–${fmt(r.end_ts)}，${r.shot_count} 拍）是真的回合嗎？假的按 ↓（自動判斷得分：${auto}${r.point_source === "guess" ? "，推測" : ""}）`);
 }
 function revNext() {
   REV.waiting = false; REV.k++;
