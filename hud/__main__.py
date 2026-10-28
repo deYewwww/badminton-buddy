@@ -30,6 +30,8 @@ def main():
     ft.add_argument("out", help="分析資料夾，例如 out/df4b66dd15")
     ft.add_argument("--epochs", type=int, default=6)
     sub.add_parser("export-coreml", help="把 TrackNet 和 YOLO 轉成 CoreML（Mac 上跑得更快，只要做一次）")
+    rp = sub.add_parser("report", help="回歸報告：代理指標、和人工標記比對、抽查清單（report.md / hard_examples.csv）")
+    rp.add_argument("out", help="分析資料夾，例如 out/work2")
     c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
     c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
     a = ap.parse_args()
@@ -58,6 +60,11 @@ def main():
     if a.cmd == "export-coreml":
         from hud.detection import coreml
         coreml.export()
+        return
+    if a.cmd == "report":
+        from hud.analysis import report
+        report.run(a.out)
+        print((Path(a.out) / "report.md").read_text())
         return
     if a.cmd == "check":
         from hud.analysis import check

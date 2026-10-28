@@ -133,6 +133,15 @@
       ｜ <b>P</b> 暫停／播放　<b>←</b> 倒退 2 秒　<b>Backspace</b> 刪掉上一個標記　<b>Esc</b> 結束</div>
     <video id="hmv" playsinline style="display:none"></video>
   </section>
+  <section id="s8" class="off">
+    <h2>⑧ 抽查 <span>程式自己挑出的可疑片段，加上隨機抽的普通片段；每個看幾秒，判斷對不對</span></h2>
+    <div class="row"><button id="hrStart" class="primary">開始抽查</button>
+      速度 <select id="hrRate"><option>0.5</option><option selected>1</option></select>
+      <span id="hrMsg" class="hint">清單由 <code>uv run hud report out/&lt;影片&gt;</code> 產生。</span></div>
+    <div id="hrKeys" class="row hint" style="display:none"><b>Y</b> 沒問題　<b>N</b> 有問題　<b>R</b> 重播　<b>→</b> 跳過　<b>←</b> 上一個　<b>Esc</b> 結束</div>
+    <div id="hrAsk" class="row" style="display:none; font-size:18px"></div>
+    <video id="hrv" playsinline style="display:none"></video>
+  </section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -598,6 +607,7 @@ async function showResult(done) {
   $("#s5").classList.toggle("off", !done);
   $("#s6").classList.toggle("off", !done);
   $("#s7").classList.toggle("off", !done);
+  $("#s8").classList.toggle("off", !done);
   if (!done) return;
   const src = `/api/hud?id=${M.id}&v=${Date.now()}`;
   $("#vid").src = src; $("#dl").href = src;
@@ -798,6 +808,41 @@ window.addEventListener("keydown", e => {
     p:() => hmv.paused ? hmv.play() : hmv.pause(), P:() => hmv.paused ? hmv.play() : hmv.pause(),
     ArrowLeft:() => { hmv.currentTime = Math.max(0, hmv.currentTime - 2); }, Backspace:hmUndo,
     Escape:() => { HM.on = false; hmv.pause(); $("#hmKeys").style.display = "none"; hmMsg(`已標 ${HM.marks.filter(x => x.kind === "end").length} 個回合（都存好了，隨時可以繼續）。`); }}[e.key];
+  if (!f) return;
+  e.preventDefault(); e.stopPropagation(); f();
+}, true);
+// ---- ⑧ spot checks: each hard example played on the HUD video, judged Y / N, saved per press.
+const HR = {on:false, items:[], k:0, stop:0};
+const hrv = $("#hrv");
+function hrShow() {
+  const it = HR.items[HR.k];
+  const done = HR.items.filter(x => x.ok !== null).length;
+  if (!it) return $("#hrMsg").textContent = `全部看完了：判了 ${done} / ${HR.items.length} 個（都存好了）。再跑一次 hud report 就會算進報告。`;
+  $("#hrAsk").innerHTML = `<b>${HR.k + 1} / ${HR.items.length}　${it.kind}</b>　${it.ask}　<span class="hint">（${fmt(it.t)}${it.ok === null ? "" : it.ok ? "，已判：沒問題" : "，已判：有問題"}）</span>`;
+  $("#hrMsg").textContent = `已判 ${done} 個。`;
+  hrv.currentTime = Math.max(0, it.hud_t - 1.5); HR.stop = it.hud_t + 2.5;
+  hrv.playbackRate = +$("#hrRate").value; hrv.play();
+}
+hrv.ontimeupdate = () => { if (HR.on && hrv.currentTime >= HR.stop) hrv.pause(); };
+async function hrJudge(ok) {
+  const it = HR.items[HR.k];
+  const r = await api("/api/hardreview", {id:M.id, t:it.t, kind:it.kind, ok});
+  HR.items = r.items; HR.k++; hrShow();
+}
+$("#hrStart").onclick = async () => {
+  const r = await api("/api/hard?id=" + M.id);
+  if (r.error) return $("#hrMsg").textContent = r.error;
+  HR.items = r.items; HR.k = Math.max(0, HR.items.findIndex(x => x.ok === null));
+  hrv.style.display = ""; hrv.controls = true;
+  if (!hrv.src.includes("/api/")) hrv.src = `/api/hud?id=${M.id}`;
+  HR.on = true; $("#hrKeys").style.display = ""; $("#hrAsk").style.display = "";
+  hrv.onloadedmetadata = hrShow; if (hrv.readyState >= 1) hrShow();
+};
+window.addEventListener("keydown", e => {
+  if (!HR.on || REV.on || LB.on || HM.on || document.activeElement.tagName === "INPUT") return;
+  const f = {y:() => hrJudge(true), Y:() => hrJudge(true), n:() => hrJudge(false), N:() => hrJudge(false), r:hrShow, R:hrShow,
+    ArrowRight:() => { HR.k++; hrShow(); }, ArrowLeft:() => { HR.k = Math.max(0, HR.k - 1); hrShow(); },
+    Escape:() => { HR.on = false; hrv.pause(); $("#hrKeys").style.display = "none"; $("#hrAsk").style.display = "none"; }}[e.key];
   if (!f) return;
   e.preventDefault(); e.stopPropagation(); f();
 }, true);
