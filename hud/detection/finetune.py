@@ -33,8 +33,10 @@ FT = S.CKPT_DIR / "TrackNet_ft.pt"
 
 def paths(out_dir):
     o = Path(out_dir)
+    # X (the windows, ~4 MB each) in a plain .npy read from disk as needed: loaded whole, 383 samples
+    # (1.5 GB) on an 8 GB Mac swapped the training to a standstill at epoch 4
     return dict(todo=o / "label_frames.json", labels=o / "shuttle_labels.csv", samples=o / "ft_samples.npz",
-                report=o / "finetune.json")
+                X=o / "ft_X.npy", report=o / "finetune.json")
 
 
 def todo(out_dir, n=N_LABELS, seed=0):
@@ -149,7 +151,8 @@ def build(out_dir, seed=0):
             LBL.append(i)
     cap.release()
     out = paths(out_dir)["samples"]
-    np.savez_compressed(out, X=np.stack(X), Y=np.array(Y, np.float32), K=np.array(K), hold=np.array(HO), label=np.array(LBL))
+    np.save(paths(out_dir)["X"], np.stack(X))
+    np.savez(out, Y=np.array(Y, np.float32), K=np.array(K), hold=np.array(HO), label=np.array(LBL))
     print(f"Built {len(X)} samples from {len(lab)} labels ({int(np.sum(HO))} held out) -> {out}")
     return out
 
@@ -188,27 +191,42 @@ def score(pred, Y, K):
                 precision=round(tp / max(tp + fp, 1), 3))
 
 
-def _predict(net, X, device, bs=4):
+def _predict(net, X, idx, device, bs=4):
+    """Heatmaps for samples idx of X (a memory-mapped array: only bs windows in memory at a time)."""
     import torch
     out = []
     with torch.no_grad():
-        for i in range(0, len(X), bs):
-            out.append(net(torch.from_numpy(X[i:i + bs]).to(device).float().div(255)).cpu().numpy())
+        for i in range(0, len(idx), bs):
+            x = torch.from_numpy(np.ascontiguousarray(X[idx[i:i + bs]])).to(device).float().div(255)
+            out.append(net(x).cpu().numpy().astype(np.float16))
     return np.concatenate(out)
 
 
-def run(out_dir, epochs=15, lr=1e-4, bs=2, seed=0):
+def _samples(p):
+    """-> X (memory-mapped), Y, K, hold. Converts an older all-in-one .npz once."""
+    d = np.load(p["samples"])
+    if "X" in d.files and not p["X"].exists():
+        np.save(p["X"], d["X"])
+        np.savez(p["samples"], **{k: d[k] for k in d.files if k != "X"})
+        d = np.load(p["samples"])
+    return np.load(p["X"], mmap_mode="r"), d["Y"], d["K"], d["hold"]
+
+
+def run(out_dir, epochs=6, lr=1e-4, bs=2, seed=0):
     """Build the samples (if needed), fine-tune, compare with the pretrained net on the held-out
-    labels, keep the new weights only if they do better. -> report dict (also finetune.json)."""
+    labels and keep the best epoch's weights, only if they do better. -> report dict (also
+    finetune.json). On the user's 203 labels most of the gain came in epochs 1-3 (recall 0.34 ->
+    0.54); later epochs risk learning the labels by heart."""
     import torch
     p = paths(out_dir)
     if not p["samples"].exists():
         build(out_dir, seed)
-    d = np.load(p["samples"])
-    X, Y, K, hold = d["X"], d["Y"], d["K"], d["hold"]
+    X, Y, K, hold = _samples(p)
+    ho = np.flatnonzero(hold)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     (net, L), _ = S._load_models(device, finetuned=False)
-    before = score(_predict(net.eval(), X[hold], device), Y[hold], K[hold])
+    before = score(_predict(net.eval(), X, ho, device), Y[ho], K[ho])
+    best, best_w = before, None
     print(f"Pretrained on the held-out labels: {before}")
     tr = np.flatnonzero(~hold)
     opt = torch.optim.Adam(net.parameters(), lr=lr)
@@ -221,7 +239,8 @@ def run(out_dir, epochs=15, lr=1e-4, bs=2, seed=0):
                 mod.eval()
         tot = 0.0
         for b in np.array_split(rng.permutation(tr), max(1, len(tr) // bs)):
-            x = torch.from_numpy(X[b]).to(device).float().div(255)
+            b = np.sort(b)  # memory-mapped reads in file order
+            x = torch.from_numpy(np.ascontiguousarray(X[b])).to(device).float().div(255)
             tgt = torch.from_numpy(np.stack([_target(Y[i]) for i in b])).to(device)
             if rng.random() < 0.5:  # mirror: the hall is not symmetric, the flight is
                 x, tgt = x.flip(-1), tgt.flip(-1)
@@ -233,14 +252,16 @@ def run(out_dir, epochs=15, lr=1e-4, bs=2, seed=0):
             opt.step()
             tot += float(loss.detach()) * len(b)
         net.eval()
-        now = score(_predict(net, X[hold], device), Y[hold], K[hold])
-        print(f"epoch {ep + 1}/{epochs}: loss {tot / len(tr):.5f}  held-out {now}")
-    after = score(_predict(net, X[hold], device), Y[hold], K[hold])
-    better = (after["recall"] > before["recall"] and after["precision"] >= before["precision"] - 0.02)
+        now = score(_predict(net, X, ho, device), Y[ho], K[ho])
+        good = now["recall"] > best["recall"] and now["precision"] >= before["precision"] - 0.02
+        if good:  # the best epoch so far, kept on the CPU
+            best, best_w = now, {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
+        print(f"epoch {ep + 1}/{epochs}: loss {tot / len(tr):.5f}  held-out {now}" + ("  <- best so far" if good else ""))
+    after, better = best, best_w is not None
     rep = dict(before=before, after=after, kept=bool(better), samples=int(len(X)), held_out=int(hold.sum()), epochs=epochs)
     if better:
         ck = torch.load(S._joined(S.CKPT_DIR / "TrackNet_best.pt"), map_location="cpu", weights_only=False)
-        torch.save(dict(model={k: v.cpu() for k, v in net.state_dict().items()}, param_dict=ck["param_dict"],
+        torch.save(dict(model=best_w, param_dict=ck["param_dict"],
                         finetuned_on=str(out_dir), report=rep), FT)
         print(f"Kept: {FT}")
     else:

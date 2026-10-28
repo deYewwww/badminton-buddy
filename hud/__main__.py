@@ -28,7 +28,7 @@ def main():
     vs.add_argument("--from", dest="src", required=True, help="分析資料夾，例如 out/空場")
     ft = sub.add_parser("finetune", help="用網頁 ⑥ 標記的羽球微調 TrackNet（比原本準才採用）")
     ft.add_argument("out", help="分析資料夾，例如 out/df4b66dd15")
-    ft.add_argument("--epochs", type=int, default=15)
+    ft.add_argument("--epochs", type=int, default=6)
     sub.add_parser("export-coreml", help="把 TrackNet 和 YOLO 轉成 CoreML（Mac 上跑得更快，只要做一次）")
     c = sub.add_parser("check", help="檢查分析結果哪裡出問題（校正、球員、羽球、擊球）")
     c.add_argument("out", help="分析資料夾，例如 out/3fa9c1b2d4")
