@@ -263,8 +263,9 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None, diag=
     def judge(sol):
         v0 = sol.x[2]
         img = cam.project_many(path(sol.x)[:len(dt)])[0]
+        err = (img - px) * 1080 / img_h
         rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
-        diag.update(rms_px=round(float(rms * sig * 1080 / img_h), 2), rel_sd=None)
+        diag.update(rms_px=round(float(rms * sig * 1080 / img_h), 2), rel_sd=None, resid_px=np.round(err, 1))
         if rms > 2.5:
             diag["reason"] = "reprojection_error"
             return None
