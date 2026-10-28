@@ -169,20 +169,25 @@ def test_marking_lag_large_delay():
 
 
 def test_speed_record_states():
-    """Fitted -> ESTIMATED; flight average only -> ESTIMATED_LOW with the fit's failure reason;
-    nothing seen -> UNAVAILABLE with no number (no stand-in median); absurd value -> UNAVAILABLE."""
+    """Rule C (docs/speed_audit.md step 3): a fit with relative SD < 10 % -> ESTIMATED; a looser fit or a
+    flight average over <= 1 s -> ESTIMATED_LOW; the 0.1 s window alone, nothing seen, or an absurd
+    value -> UNAVAILABLE with no number."""
     from hud.analysis.hits import speed_record
-    ts = np.arange(400) / 30
+    ts = np.arange(600) / 30
     df = pd.DataFrame(dict(
-        frame=[0, 30, 60, 300], timestamp=[0.0, 1.0, 2.0, 10.0], sure=[True, False, False, False],
-        speed_kmh_est=[120.0, np.nan, np.nan, 900.0], fit_failure=[None, "uncertain", "too_few_points", "uncertain"],
-        contact_x_m=[3.0, 3.0, 3.0, 3.0], contact_y_m=[2.0, 11.0, 2.0, 2.0], contact_z_m=[2.0, 1.5, 2.0, 2.0],
-        landing_x=[np.nan] * 4, landing_y=[np.nan] * 4, end_frame=[-1] * 4, serve=[False] * 4))
+        frame=[0, 30, 60, 90, 300, 450], timestamp=[0.0, 1.0, 2.0, 3.0, 10.0, 15.0],
+        sure=[True, True, False, False, False, True], speed_kmh_est=[120.0, 90.0, np.nan, 80.0, np.nan, 900.0],
+        fit_rel_sd=[0.05, 0.2, np.nan, np.nan, np.nan, 0.05],
+        fit_failure=[None, None, "uncertain", "reprojection_error", "too_few_points", None],
+        contact_x_m=[3.0] * 6, contact_y_m=[2.0, 11.0, 2.0, 11.0, 2.0, 2.0], contact_z_m=[2.0, 1.5, 2.0, 1.5, 2.0, 2.0],
+        landing_x=[np.nan] * 6, landing_y=[np.nan] * 6, end_frame=[-1] * 6, serve=[False] * 6))
     r = speed_record(df, ts)
-    assert r.speed_status.tolist() == ["ESTIMATED", "ESTIMATED_LOW", "UNAVAILABLE", "UNAVAILABLE"], r.speed_status.tolist()
-    assert r.speed_kmh[0] == 120 and np.isnan(r.speed_kmh[2]) and np.isnan(r.speed_kmh[3])
-    assert r.speed_type[1] == "initial_from_flight_avg" and r.speed_reason[1] == "uncertain"
-    assert r.speed_reason[2] == "nothing_measurable" and r.speed_reason[3] == "out_of_range"
+    assert r.speed_status.tolist() == ["ESTIMATED", "ESTIMATED_LOW", "ESTIMATED_LOW", "UNAVAILABLE", "UNAVAILABLE",
+                                       "UNAVAILABLE"], r.speed_status.tolist()
+    assert r.speed_kmh[0] == 120 and r.speed_reason[1] == "fit_uncertain"
+    assert r.speed_type[2] == "initial_from_flight_avg" and r.speed_reason[2] == "uncertain"
+    assert r.speed_reason[3] == "window_only" and np.isnan(r.speed_kmh[3])   # 3 -> 10 s: no flight average
+    assert r.speed_reason[4] == "nothing_measurable" and r.speed_reason[5] == "out_of_range"
 
 
 def test_placement():

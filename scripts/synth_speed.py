@@ -11,9 +11,10 @@ calibration. Then the same three estimators hits.py uses are run on what that ca
   window  the 0.1 s fallback (point on the contact -> end line, or level flight)
 
 What is made worse on purpose (the real clip's conditions, docs/speed_audit.md R4):
-  pixel noise 2 px at 1080p; only OBS_P of frames seen, in runs; the contact estimate off by
-  ~0.3 m sideways / 0.2 m up (hitter-vertical guess), the end point off by ~0.4 m; the contact
-  anywhere inside its frame; the shuttle's real drag 0.17-0.28 /m while the fit assumes 0.22.
+  pixel noise 2 px at 1080p; only OBS_P of frames seen, in runs; the contact and the next
+  contact guessed as hits.py does (the point on the shuttle's viewing ray nearest the vertical
+  over the hitter's stance, which is REACH_SD from under the racket), a floor landing off by
+  FLOOR_SD; the contact anywhere inside its frame; the real drag 0.17-0.28 /m, the fit's 0.22.
 
 Writes <out>/synth_speed.csv (one row per shot) and prints the tables. This tests the algorithms
 and what this camera can resolve. It says nothing about real-world accuracy: real shuttles
@@ -35,8 +36,9 @@ from hud.court.camera import Camera  # noqa: E402
 FPS = 30.0
 PX_NOISE = 2.0          # px at 1080p (hits.FIT_PX)
 OBS_P = 0.6             # share of in-play frames TrackNet saw on the user's clip (in play: 58-62 %)
-CONTACT_SD = (0.3, 0.3, 0.2)  # m: x, y, z error of the hitter-vertical contact guess
-END_SD = 0.4            # m: next contact / landing estimate (hits.FIT_END_M)
+REACH_SD = 0.4          # m per axis: racket (contact) vs the hitter's stance (feet) seen from above
+REACH_SD_END = 0.4      # ... the same for the receiver (the end of the shot)
+FLOOR_SD = 0.2          # m per axis: a landing seen on the floor, through the homography
 K_RANGE = (0.17, 0.28)  # 1/m: real drag spread (feather vs nylon, speed); the fit uses DRAG_K
 
 
@@ -95,6 +97,13 @@ def observe(cam, c0, v0, u, k, t_end, size, rng):
     return ft[keep], px[keep] + noise
 
 
+def guess(cam, X, size, rng, reach):
+    """Where hits.py would put a contact at X: on the ray through its (noisy) pixel, nearest the
+    vertical over the hitter's stance, which is not under the racket."""
+    q = cam.project(X) + rng.normal(0, PX_NOISE * min(size) / 1080, 2)
+    return cam.near_vertical(q, X[:2] + rng.normal(0, reach, 2))
+
+
 def estimate(cam, c0e, end_e, t_end, dt, px, img_h):
     out = {}
     diag = {}
@@ -131,8 +140,9 @@ def run(out_dir, n, seed):
         if t_end < 0.15:
             continue
         dt, px = observe(cam, c0, v0, u, k, t_end, size, rng)
-        c0e = c0 + rng.normal(0, CONTACT_SD)
-        end_e = P[-1] + rng.normal(0, END_SD, 3)
+        c0e = guess(cam, c0, size, rng, REACH_SD)
+        end = P[-1]
+        end_e = guess(cam, end, size, rng, REACH_SD_END) if end[2] > 0.3 else np.r_[end[:2] + rng.normal(0, FLOOR_SD, 2), 0.0]
         est = estimate(cam, c0e, end_e, t_end, dt, px, img_h)
         rows.append(dict(true_kmh=v0 * 3.6, k=k, view_deg=view_angle(cam, c0, u), elev_deg=np.degrees(np.arcsin(u[2])),
                          far=c0[1] > NET_Y, n_obs=len(dt), t_end=t_end,
@@ -167,13 +177,13 @@ if __name__ == "__main__":
                     help="ablation: make these perfect (exact contact, drag = the fit's, every frame seen, exact end)")
     a = ap.parse_args()
     if "contact" in a.only:
-        CONTACT_SD = (0.0, 0.0, 0.0)
+        REACH_SD = 0.0
     if "drag" in a.only:
         K_RANGE = (DRAG_K, DRAG_K)
     if "seen" in a.only:
         OBS_P = 1.0
     if "end" in a.only:
-        END_SD = 0.0
+        REACH_SD_END, FLOOR_SD = 0.0, 0.0
     df, cam = run(a.out_dir, a.n, a.seed)
     print(f"camera C={np.round(cam.C, 2).tolist()} f={cam.f:.0f}px | {len(df)} shots | drag fit {DRAG_K}, true {K_RANGE}")
     print("\n== 全部（|誤差| 中位數 / 第 90 百分位）")

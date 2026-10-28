@@ -659,6 +659,8 @@ SMASH_Z_M = 1.4       # 1000 px of frame height) and contact height for a smash.
                       # lift" (60 vs 57 %), so only the smash is shown
 LINE_SIDE_M = 0.8     # line_of: hitter and receiver must each stand this far from the centre line
 ROUGH_KMH = (15.0, 250.0)  # speed_record: outside this a speed is UNAVAILABLE, not clipped (fits on the clip: 12-199)
+FIT_GOOD_REL_SD = 0.10     # speed_record: a fit is ESTIMATED below this relative SD (synthetic: 12 % vs 22 % error)
+FLIGHT_LOW_MAX_S = 1.0     # ... flight averages are used only for flights up to this long
 FLIGHT_AVG_MAX_KMH = 100.0  # a whole flight averaging more is two hits paired wrongly (8-11 m in 0.2-0.3 s
                             # on the user's clip: a false hit or a serve found too late), not a speed
 
@@ -694,13 +696,14 @@ def speed_record(df, ts):
     """Per hit: speed_kmh (initial speed at contact, km/h; NaN when unavailable), speed_type (how it
     was estimated), speed_status and speed_reason. Nothing here is validated: there is no
     independent speed reference (docs/speed_audit.md R3), so the best a shot gets is ESTIMATED.
-      ESTIMATED      initial_3d_fit: the drag + gravity flight fitted to the whole tracked flight
-                     (stable to 4 % when the players' positions changed slightly between runs)
-      ESTIMATED_LOW  initial_from_flight_avg: straight distance to the next contact (or landing)
-                     over the flight time, undone for drag; initial_from_window: the 0.1 s
-                     fallbacks (moved by up to 48 % / 260 % on the same small change)
-      UNAVAILABLE    nothing usable seen, or a value outside ROUGH_KMH: no number (the match
-                     median used to stand in for it; the user chose "—" instead)
+    Bounds from the synthetic test on the user's camera (scripts/synth_speed.py, rule C in
+    docs/speed_audit.md; synthetic |error| median / 90th percentile, real error is larger):
+      ESTIMATED      initial_3d_fit with relative SD < FIT_GOOD_REL_SD (12 % / 34 %)
+      ESTIMATED_LOW  the other fits, and initial_from_flight_avg (straight distance to the next
+                     contact or landing over the flight time, undone for drag) for flights up
+                     to FLIGHT_LOW_MAX_S (together 16 % / 37 %)
+      UNAVAILABLE    the 0.1 s window fallback (40 % / 87 %, 35 % low), longer flights' averages
+                     (30 % / 54 %), nothing usable seen, or a value outside ROUGH_KMH
     ts: timestamp per frame (flight times from real frame times, not a nominal fps)."""
     c0 = df[["contact_x_m", "contact_y_m", "contact_z_m"]].to_numpy(float)
     dt = (df.timestamp.shift(-1) - df.timestamp).to_numpy(float, copy=True)
@@ -715,16 +718,18 @@ def speed_record(df, ts):
     ok[ok] = dist[ok] / dt[ok] * 3.6 <= FLIGHT_AVG_MAX_KMH
     flight = np.full(len(df), np.nan)
     flight[ok] = [from_window_avg(d / t, t) * 3.6 for d, t in zip(dist[ok], dt[ok])]
+    flight[dt > FLIGHT_LOW_MAX_S] = np.nan
     fit = df.speed_kmh_est.where(df.sure.fillna(False).astype(bool)).to_numpy(float)
-    win = df.speed_kmh_est.where(~df.sure.fillna(False).astype(bool)).to_numpy(float)
-    kmh = np.where(np.isfinite(fit), fit, np.where(np.isfinite(flight), flight, win))
-    kind = np.where(np.isfinite(fit), "initial_3d_fit", np.where(np.isfinite(flight), "initial_from_flight_avg",
-                    np.where(np.isfinite(win), "initial_from_window", None)))
-    status = np.where(np.isfinite(fit), "ESTIMATED", np.where(np.isfinite(kmh), "ESTIMATED_LOW", "UNAVAILABLE"))
+    good = np.isfinite(fit) & (df.get("fit_rel_sd", pd.Series(np.nan, index=df.index)).astype(float).to_numpy() < FIT_GOOD_REL_SD)
+    kmh = np.where(np.isfinite(fit), fit, flight)
+    kind = np.where(np.isfinite(fit), "initial_3d_fit", np.where(np.isfinite(flight), "initial_from_flight_avg", None))
+    status = np.where(good, "ESTIMATED", np.where(np.isfinite(kmh), "ESTIMATED_LOW", "UNAVAILABLE"))
     fail = df.get("fit_failure", pd.Series([None] * len(df), index=df.index))
     serve = df.get("serve", pd.Series(False, index=df.index)).fillna(False).astype(bool).to_numpy()
     reason = np.where(np.isfinite(fit), None, np.where(fail.isna(), np.where(serve, "serve_not_fitted", "no_fit"), fail))
-    reason = np.where(~np.isfinite(kmh), "nothing_measurable", reason)
+    reason = np.where(np.isfinite(fit) & ~good, "fit_uncertain", reason)
+    win = df.speed_kmh_est.where(~df.sure.fillna(False).astype(bool)).notna().to_numpy()
+    reason = np.where(~np.isfinite(kmh), np.where(win, "window_only", "nothing_measurable"), reason)
     out = np.isfinite(kmh) & ((kmh < ROUGH_KMH[0]) | (kmh > ROUGH_KMH[1]))
     kmh[out], status[out], reason[out] = np.nan, "UNAVAILABLE", "out_of_range"
     df["speed_kmh"], df["speed_type"], df["speed_status"], df["speed_reason"] = np.round(kmh), kind, status, reason
