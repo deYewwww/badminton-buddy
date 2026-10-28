@@ -99,6 +99,9 @@ def test_initial_speed_under_drag():
         c0e = cam.near_vertical(proj(c0), np.array(c0[:2]) + [0.3, -0.2])
         v = fit_speed(cam, c0e, dt, px, (dt[-1], X[-1]), 30)
         assert v is not None and abs(v * 3.6 / kmh - 1) < 0.08, (kmh, v and v * 3.6)
+    # a rejected fit says why: 3 points are too few
+    diag = {}
+    assert fit_speed(cam, c0e, dt[:3], px[:3], None, 30, diag=diag) is None and diag["reason"] == "too_few_points"
     # fast start over a long flight stays finite (step capped by k*v0*h)
     assert np.isfinite(flight(139.0, np.array([0, 1.0, 0]), np.array([1.5]))).all()
     # the fallback's correction: 0.1 s average of a 300 km/h smash back to 300

@@ -168,6 +168,23 @@ def test_marking_lag_large_delay():
     assert abs(lag + 0.47) < 0.03, lag
 
 
+def test_speed_record_states():
+    """Fitted -> ESTIMATED; flight average only -> ESTIMATED_LOW with the fit's failure reason;
+    nothing seen -> UNAVAILABLE with no number (no stand-in median); absurd value -> UNAVAILABLE."""
+    from hud.analysis.hits import speed_record
+    ts = np.arange(400) / 30
+    df = pd.DataFrame(dict(
+        frame=[0, 30, 60, 300], timestamp=[0.0, 1.0, 2.0, 10.0], sure=[True, False, False, False],
+        speed_kmh_est=[120.0, np.nan, np.nan, 900.0], fit_failure=[None, "uncertain", "too_few_points", "uncertain"],
+        contact_x_m=[3.0, 3.0, 3.0, 3.0], contact_y_m=[2.0, 11.0, 2.0, 2.0], contact_z_m=[2.0, 1.5, 2.0, 2.0],
+        landing_x=[np.nan] * 4, landing_y=[np.nan] * 4, end_frame=[-1] * 4, serve=[False] * 4))
+    r = speed_record(df, ts)
+    assert r.speed_status.tolist() == ["ESTIMATED", "ESTIMATED_LOW", "UNAVAILABLE", "UNAVAILABLE"], r.speed_status.tolist()
+    assert r.speed_kmh[0] == 120 and np.isnan(r.speed_kmh[2]) and np.isnan(r.speed_kmh[3])
+    assert r.speed_type[1] == "initial_from_flight_avg" and r.speed_reason[1] == "uncertain"
+    assert r.speed_reason[2] == "nothing_measurable" and r.speed_reason[3] == "out_of_range"
+
+
 def test_placement():
     assert rate("clear", (0.3, 13.2), "us", [(3, 10)]) >= 85      # deep corner
     assert rate("clear", (3.0, 9.0), "us", [(3, 10)]) < 50         # mid court

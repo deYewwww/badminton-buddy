@@ -203,7 +203,7 @@ def from_window_avg(avg, window, k=DRAG_K):
     return float(np.expm1(min(k * avg * window, 5.0)) / (k * window))
 
 
-def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
+def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None, diag=None):
     """Initial speed (m/s) of a shot, or None if it can't be pinned down.
 
     dt: (N,) seconds after the hit frame; px: (N,2) detections of this shot's whole flight;
@@ -216,13 +216,17 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
     line of sight is ambiguous. Whole flight, not the first frames: the physics holds all the
     way, and the deceleration over the flight is what fixes v0.
     Rejected when the reprojection error stays large, v0 ends on a bound, or its standard
-    error exceeds 25 %."""
+    error exceeds FIT_MAX_REL_SD. diag (a dict): filled with n, rms_px (reprojection, px) and
+    rel_sd of the best try, and reason when rejected."""
+    diag = {} if diag is None else diag
     from scipy.optimize import least_squares
     dt, px = np.asarray(dt, float), np.asarray(px, float)
     if len(dt) > FIT_MAX_PTS:  # evenly thinned: the fit cost grows with points and flight time
         keep = np.unique(np.linspace(0, len(dt) - 1, FIT_MAX_PTS).round().astype(int))
         dt, px = dt[keep], px[keep]
+    diag["n"] = len(dt)
     if len(dt) < FIT_MIN_PTS:
+        diag["reason"] = "too_few_points"
         return None
     sig = FIT_PX * img_h / 1080
     unit = lambda a, e: np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])
@@ -260,13 +264,24 @@ def fit_speed(cam, c0, dt, px, end=None, fps=30.0, img_h=1080, guess=None):
         v0 = sol.x[2]
         img = cam.project_many(path(sol.x)[:len(dt)])[0]
         rms = np.sqrt(np.mean(np.sum((img - px) ** 2, 1))) / sig
-        if rms > 2.5 or not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
+        diag.update(rms_px=round(float(rms * sig * 1080 / img_h), 2), rel_sd=None)
+        if rms > 2.5:
+            diag["reason"] = "reprojection_error"
+            return None
+        if not (FIT_V0[0] * 1.02 < v0 < FIT_V0[1] * 0.98):
+            diag["reason"] = "speed_at_bound"
             return None
         try:
             sd = np.sqrt(np.linalg.inv(sol.jac.T @ sol.jac)[2, 2])
         except np.linalg.LinAlgError:
+            diag["reason"] = "singular"
             return None
-        return float(v0) if sd < FIT_MAX_REL_SD * v0 else None
+        diag["rel_sd"] = round(float(sd / v0), 3)
+        if sd >= FIT_MAX_REL_SD * v0:
+            diag["reason"] = "uncertain"
+            return None
+        diag.pop("reason", None)
+        return float(v0)
     best = None
     for v in starts:  # the first start usually lands; others only when it is rejected
         x0 = [a0, e0, float(np.clip(v, FIT_V0[0] * 1.01, FIT_V0[1] * 0.99)), 0.0, 0.0]
@@ -525,9 +540,11 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
         js = [j for j in range(i + 1, min(j_end, len(p))) if seen[j] and not shuttle.interpolated.iat[j]]
         kmh, method = None, None
         stop = len(p) if end is None else min(len(p), int(end))  # up to, not including, the next contact
-        fit_js = [j for j in range(i + 1, min(stop, i + 1 + round(FIT_MAX_S * fps))) if real[j]]
+        span = range(i + 1, min(stop, i + 1 + round(FIT_MAX_S * fps)))
+        fit_js = [j for j in span if real[j]]
         fin = (t[end] - t[i], end3) if kind in ("intercept", "floor") and end is not None else None
-        v0 = fit_speed(cam, c0, t[fit_js] - t[i], p[fit_js], fin, fps, img_h) if len(fit_js) >= FIT_MIN_PTS else None
+        diag = {"n": len(fit_js), "reason": "too_few_points"}
+        v0 = fit_speed(cam, c0, t[fit_js] - t[i], p[fit_js], fin, fps, img_h, diag=diag) if len(fit_js) >= FIT_MIN_PTS else None
         if v0 is not None:
             kmh, method = v0 * 3.6, "drag_fit"
         elif js:
@@ -556,6 +573,12 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
                      # and the types built on them were "basically all wrong". Scoring keeps using all
                      # of them (hiding them there dropped real 2-shot rallies as pick-ups)
                      "sure": method == "drag_fit",
+                     # the fit's evidence, kept whether it held or not (speed_record reads it)
+                     "observed_point_count": len(fit_js),
+                     "interpolated_point_count": int(sum(seen[j] and not real[j] for j in span)),
+                     "time_span_ms": round((t[fit_js[-1]] - t[i]) * 1000) if fit_js else 0,
+                     "fit_rms_px": diag.get("rms_px"), "fit_rel_sd": diag.get("rel_sd"),
+                     "fit_failure": diag.get("reason"),
                      "flight_avg_kmh_est": None if avg is None else round(avg, 1),
                      "shot_type": shot_type(c0, land, kmh, avg) if np.isfinite(land[0]) else "other",
                      "landing_x": land[0], "landing_y": land[1], "landing_kind": kind, "landing_sd": land_sd,
@@ -635,7 +658,7 @@ SMASH_Z_M = 1.4       # 1000 px of frame height) and contact height for a smash.
                       # types were right 9 % of the time and a classifier for all 6 types barely beat "always
                       # lift" (60 vs 57 %), so only the smash is shown
 LINE_SIDE_M = 0.8     # line_of: hitter and receiver must each stand this far from the centre line
-ROUGH_KMH = (15.0, 250.0)  # rough speeds (speed_shown_kmh) are clipped to this (fits on the clip: 12-199)
+ROUGH_KMH = (15.0, 250.0)  # speed_record: outside this a speed is UNAVAILABLE, not clipped (fits on the clip: 12-199)
 FLIGHT_AVG_MAX_KMH = 100.0  # a whole flight averaging more is two hits paired wrongly (8-11 m in 0.2-0.3 s
                             # on the user's clip: a false hit or a serve found too late), not a speed
 
@@ -664,20 +687,27 @@ def shown_types(df, shuttle, frame_h):
     sure = (a.abs() > LINE_SIDE_M) & (b.abs() > LINE_SIDE_M)
     df["line"] = np.where(sure & (a * b > 0), "straight", np.where(sure & (a * b < 0), "cross", None))
     df.loc[df.serve.fillna(False).astype(bool), "line"] = None  # a serve always goes across
-    return rough_speeds(df, 1 / np.median(np.diff(shuttle.timestamp)))
+    return speed_record(df, shuttle.timestamp.to_numpy(float))
 
 
-def rough_speeds(df, fps):
-    """A speed for every hit (the user: every shot shows one, rough is fine), best source first:
-    fit = the physical flight fit (sure); flight = straight distance to the next contact (or the
-    landing) over the flight time, undone for drag (on the 21 fitted hits of the user's clip it
-    tracked the fit with r 0.65, median ratio 0.92); window = the 0.1 s fallback (3-409 km/h);
-    typical = this match's median of the others (smash / not), when nothing at all was seen."""
+def speed_record(df, ts):
+    """Per hit: speed_kmh (initial speed at contact, km/h; NaN when unavailable), speed_type (how it
+    was estimated), speed_status and speed_reason. Nothing here is validated: there is no
+    independent speed reference (docs/speed_audit.md R3), so the best a shot gets is ESTIMATED.
+      ESTIMATED      initial_3d_fit: the drag + gravity flight fitted to the whole tracked flight
+                     (stable to 4 % when the players' positions changed slightly between runs)
+      ESTIMATED_LOW  initial_from_flight_avg: straight distance to the next contact (or landing)
+                     over the flight time, undone for drag; initial_from_window: the 0.1 s
+                     fallbacks (moved by up to 48 % / 260 % on the same small change)
+      UNAVAILABLE    nothing usable seen, or a value outside ROUGH_KMH: no number (the match
+                     median used to stand in for it; the user chose "—" instead)
+    ts: timestamp per frame (flight times from real frame times, not a nominal fps)."""
     c0 = df[["contact_x_m", "contact_y_m", "contact_z_m"]].to_numpy(float)
     dt = (df.timestamp.shift(-1) - df.timestamp).to_numpy(float, copy=True)
     c1 = np.roll(c0, -1, axis=0)
     land = np.c_[df.landing_x, df.landing_y, np.zeros(len(df))]
-    t_land = (df.end_frame - df.frame).to_numpy(float) / fps
+    e = df.end_frame.to_numpy(int)
+    t_land = np.where((e >= 0) & (e < len(ts)), ts[np.clip(e, 0, len(ts) - 1)], np.nan) - df.timestamp.to_numpy(float)
     last = ~(dt < MISSED_HIT_S)  # no next contact in this flight: to the landing
     c1[last], dt[last] = land[last], t_land[last]
     dist = np.linalg.norm(c1 - c0, axis=1)
@@ -686,15 +716,19 @@ def rough_speeds(df, fps):
     flight = np.full(len(df), np.nan)
     flight[ok] = [from_window_avg(d / t, t) * 3.6 for d, t in zip(dist[ok], dt[ok])]
     fit = df.speed_kmh_est.where(df.sure.fillna(False).astype(bool)).to_numpy(float)
-    win = df.speed_kmh_est.to_numpy(float, copy=True)
+    win = df.speed_kmh_est.where(~df.sure.fillna(False).astype(bool)).to_numpy(float)
     kmh = np.where(np.isfinite(fit), fit, np.where(np.isfinite(flight), flight, win))
-    src = np.where(np.isfinite(fit), "fit", np.where(np.isfinite(flight), "flight", np.where(np.isfinite(win), "window", "typical")))
-    kmh = np.clip(kmh, *ROUGH_KMH)
-    smash = (df.shown_type == "smash").to_numpy()
-    for grp in (smash, ~smash):
-        known = np.isfinite(kmh) & grp
-        kmh[grp & ~known] = np.median(kmh[known]) if known.any() else np.nanmedian(kmh) if np.isfinite(kmh).any() else 100.0
-    df["speed_shown_kmh"], df["speed_src"] = np.round(kmh), src
+    kind = np.where(np.isfinite(fit), "initial_3d_fit", np.where(np.isfinite(flight), "initial_from_flight_avg",
+                    np.where(np.isfinite(win), "initial_from_window", None)))
+    status = np.where(np.isfinite(fit), "ESTIMATED", np.where(np.isfinite(kmh), "ESTIMATED_LOW", "UNAVAILABLE"))
+    fail = df.get("fit_failure", pd.Series([None] * len(df), index=df.index))
+    serve = df.get("serve", pd.Series(False, index=df.index)).fillna(False).astype(bool).to_numpy()
+    reason = np.where(np.isfinite(fit), None, np.where(fail.isna(), np.where(serve, "serve_not_fitted", "no_fit"), fail))
+    reason = np.where(~np.isfinite(kmh), "nothing_measurable", reason)
+    out = np.isfinite(kmh) & ((kmh < ROUGH_KMH[0]) | (kmh > ROUGH_KMH[1]))
+    kmh[out], status[out], reason[out] = np.nan, "UNAVAILABLE", "out_of_range"
+    df["speed_kmh"], df["speed_type"], df["speed_status"], df["speed_reason"] = np.round(kmh), kind, status, reason
+    df["calibration_status"] = "court_4pt_no_lens_model"  # docs/speed_audit.md R5: no residual, distortion ignored
     return df
 
 

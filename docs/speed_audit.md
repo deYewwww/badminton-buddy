@@ -340,3 +340,50 @@ HUD (hud/visualization/render.py)
 | `level+drag` | 36 | 31 | **260 %** |
 
 - 退而求其次的兩種算法，對擊球點假設極度敏感。第 2 步把它們歸類為低信心，第 3 步會量化原因。
+
+---
+
+## 第 2 步結果（2026-10-28）
+
+**每拍的球速紀錄**（`hits.speed_record`；hits.parquet 和 shots.parquet 都有）
+
+| 欄位 | 意思 |
+|---|---|
+| `speed_kmh` | 擊球瞬間初速（km/h）；不可用時為 NaN，**不再用整場中位數代替** |
+| `speed_type` | `initial_3d_fit` / `initial_from_flight_avg` / `initial_from_window` |
+| `speed_status` | `ESTIMATED`（物理擬合）/ `ESTIMATED_LOW`（距離 ÷ 時間，或 0.1 s 視窗）/ `UNAVAILABLE` |
+| `speed_reason` | 為什麼不是 ESTIMATED：擬合失敗的原因、`nothing_measurable`、`out_of_range` |
+| `observed_point_count` / `interpolated_point_count` / `time_span_ms` | 擬合用了多少觀測點、多少插值或補點（只計數，不參與擬合）、跨多長時間 |
+| `fit_rms_px` / `fit_rel_sd` | 重投影誤差（以 1080p 為基準的 px）、初速的相對標準誤 |
+| `calibration_status` | 目前固定為 `court_4pt_no_lens_model`：4 點 Homography、沒有誤差估計、忽略畸變（R5） |
+
+規則上的其他改動：
+- 超出 15–250 km/h 的值改成 `UNAVAILABLE`，**不再夾到邊界**。以前有 19 拍被夾成 15 或 250 顯示出來。
+- 落地時間改用真實時間戳，不再用名義 fps（R9）。
+
+**HUD**
+
+| 狀態 | 標題 | 數字 |
+|---|---|---|
+| ESTIMATED | 「初速（估）」 | 141 |
+| ESTIMATED_LOW | 「初速（約）」 | ≈145 |
+| UNAVAILABLE | 「初速」 | — |
+
+**IMG_9840 的分布**【實測，work2 的副本，160 拍】
+
+| 狀態 | 拍數 | 備註 |
+|---|---|---|
+| ESTIMATED | 23 | 觀測點中位數 22（7–37），重投影誤差中位數 2.7 px，相對標準誤中位數 6 %（最大 36 %） |
+| ESTIMATED_LOW | 81 | 距離 ÷ 時間 68、0.1 s 視窗 13 |
+| UNAVAILABLE | 56 | 什麼都量不到 37、超出範圍 19 |
+
+擬合失敗的原因：
+- 重投影誤差太大 45；
+- 發球沒有擬合 20；
+- 觀測點太少 9；
+- 標準誤太大 6。
+
+**這一步沒有改變什麼**
+- 這一步只是把球速**分類並說明來源**，沒有讓任何球速變得更準。
+- `ESTIMATED` 只代表擬合收斂、而且在兩次執行間很穩定（≤ 4 %），不代表接近真實球速。
+- ESTIMATED 和 ESTIMATED_LOW 的分界現在只依「用的是哪種方法」，還沒有用合成資料驗證過。這是第 3 步的工作。

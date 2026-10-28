@@ -213,14 +213,16 @@ def sure(shot):
 
 
 def shot_speed(shot):
-    """km/h the HUD shows for a shot: every shot has one (hits.rough_speeds), the fitted ones exact-ish,
-    the rest rough. Older results without speed_shown_kmh: the fitted speed only."""
+    """(km/h or None, prefix) the HUD shows for a shot, from hits.speed_record: ESTIMATED plain,
+    ESTIMATED_LOW with "≈", UNAVAILABLE None (drawn as "—"). Older results: the fitted speed only."""
     if shot is None:
-        return None
-    v = getattr(shot, "speed_shown_kmh", None)
-    if v is None or pd.isna(v):
-        v = shot.speed_kmh_est if sure(shot) else None
-    return None if v is None or pd.isna(v) else float(v)
+        return None, ""
+    if "speed_status" not in shot:
+        return (float(shot.speed_kmh_est), "") if sure(shot) else (None, "")
+    v = shot.speed_kmh
+    if shot.speed_status == "UNAVAILABLE" or pd.isna(v):
+        return None, ""
+    return float(v), "" if shot.speed_status == "ESTIMATED" else "≈"
 
 
 def hit_groups(hits, fps, max_gap_s=HIT_GAP_S):
@@ -658,7 +660,7 @@ class Hud:
         """Speed of the shot just hit, beside the shuttle marker for LOCK_S: plain text, no box."""
         S, u = self.S, self.u
         shot, _, _ = self.current_shot(f)
-        v = shot_speed(shot)
+        v, pre = shot_speed(shot)
         if v is None or (f - shot.frame) / self.fps > LOCK_S:
             return
         # on the shuttle as it is now, or not at all: pinned to where it was hit, the reticle hung
@@ -670,7 +672,7 @@ class Hud:
         a = (f - shot.frame) / self.fps / LOCK_S  # fades out over its last third
         if a > 2 / 3:
             roi = img.copy()
-        text = f"{'' if sure(shot) else '≈'}{v:.0f}"
+        text = f"{pre}{v:.0f}"
         d = max(1, int(2 * u))  # a dark shadow keeps it readable on the banner and the tags
         w = put(img, text, 26 * u, BG, x + d, y + d, "lb")
         put(img, "km/h", 15 * u, BG, x + w + 4 * u + d, y - 3 * u + d, "lb")
@@ -694,8 +696,8 @@ class Hud:
             t = (f - rally.start_frame) / self.fps
         widths = [235, 235, 330, 200][:4 if self.show_score else 3]
         x = m
-        v = shot_speed(shot)
-        heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "球速（約）", "比分"]
+        v, pre = shot_speed(shot)  # initial speed at contact, never validated (docs/speed_audit.md)
+        heads = ["回合時間", "擊球數", "初速" if v is None else "初速（約）" if pre else "初速（估）", "比分"]
         for i, (wd, head) in enumerate(zip(widths, heads)):
             wd *= u
             panel(img, x, y, x + wd, y + h, (240, 200, 54) if i == 1 else None)
@@ -707,11 +709,10 @@ class Hud:
                 put(img, f"{n} 拍", 38 * u, WHITE, x + 16 * u, vy)
             elif i == 2:
                 if v is not None:
-                    w = put(img, f"{'' if sure(shot) else '≈'}{v:.0f}", 38 * u, WHITE, x + 16 * u, vy)
+                    w = put(img, f"{pre}{v:.0f}", 38 * u, WHITE, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 26 * u + w, vy + 14 * u)
-                else:
-                    put(img, "---", 38 * u, GREY, x + 16 * u, vy)
-                    put(img, "km/h", 20 * u, GREY, x + 110 * u, vy + 14 * u)
+                else:  # UNAVAILABLE: too little seen to say
+                    put(img, "—", 38 * u, GREY, x + 16 * u, vy)
                 if shot is not None:  # only the smash is called (see hits.shown_types); the line is a guess
                     kind = TYPE_LABEL.get(getattr(shot, "shown_type", None) or "", "")
                     line = {"straight": "直線", "cross": "斜線"}.get(getattr(shot, "line", None) or "", "")
