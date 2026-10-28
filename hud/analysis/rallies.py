@@ -202,6 +202,11 @@ def build(shots, players, cfg, shuttle=None, cuts=()):
             if len(seen_after):
                 end_frame = int(last.frame) + int(seen_after[gaps[0]] if len(gaps) else seen_after[-1])
             end_frame = min(end_frame, int(last.frame + r["max_flight_s"] * fps))  # no shot flies longer
+        if not landed:
+            # the tracker mostly loses the last shot in the air: on the user's 16 marked rallies the end
+            # came 0.7 s early (median), following its sightings did not help. A rally lasts at least
+            # the last shot's flight: tuned on rallies 1-8 (end error 0.66 -> 0.33 s), 0.80 -> 0.42 s on 9-16
+            end_frame = max(end_frame, int(last.frame + r.get("last_flight_s", 0.0) * fps))
         nxt_cut = [c for c in cuts if c > last.frame]
         if nxt_cut:
             end_frame = min(end_frame, int(nxt_cut[0]) - 1)

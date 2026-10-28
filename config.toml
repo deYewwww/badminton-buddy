@@ -12,6 +12,7 @@ max_gap_s = 3.0          # two hits further apart than this belong to different 
 silence_s = 1.0          # no real shuttle sighting this long = play has stopped
 flight_gap_s = 0.25      # rally ends where the last shot's track breaks off for this long
 max_flight_s = 1.5       # ... and no later than this after the last hit (a high clear's flight)
+last_flight_s = 1.2      # ... but at least this long after it unless seen landing (the last flight is mostly lost)
 floor_sure_sd = 1.5      # a landing SEEN on the floor calls in/out only this many sd (hits.FLOOR_PX) clear of
                          # the lines: from a 0.7 m phone one pixel is ~0.2 m near the net (ACE: a call 0.9 m
                          # past the net was wrong)
@@ -40,6 +41,9 @@ far_pass = true          # second TrackNet pass zoomed on the far court, only wh
                          # frame (portrait / stabilised / low phone): +~60 % TrackNet time, more far shots
 
 [score]
+show = false             # score panel + 得分 banner in the HUD. Off while the analysis focuses on serves,
+                         # rally time, shot count, speed and shot type (user, 2026-10-28); the score is still
+                         # computed and the editor can still fix it
 # score at the start of the video (for videos that begin mid-match)
 games_us = 0
 games_opp = 0

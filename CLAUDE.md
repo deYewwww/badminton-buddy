@@ -167,3 +167,23 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   YONEX banner (visible to a person), 3 already on the floor. Long gaps (> 10 frames) often start and end
   on sightings that sit on players' shirts/shorts: TrackNet locked onto clothing, not the shuttle.
 
+- Shot types (2026-10-28, user's 58 typed hits on IMG_9840): the rule types (hits.shot_type) were right
+  9 %, a classifier for all 6 types 60 % vs 57 % "always lift". The HUD now shows only 殺球
+  (hits.shown_types: image downward speed after the hit > SMASH_VY and contact > 1.4 m: 6/10 found,
+  2 wrong) plus 直線/斜線（推測） from the hitter's vs the next contact's side of the centre line
+  (unchecked: no truth). shot_type stays for scoring/stamina.
+- Every shot shows a speed now (user, 2026-10-28): hits.rough_speeds -> speed_shown_kmh / speed_src: fit (sure),
+  flight (straight distance to the next contact or landing over the flight time, drag undone; r 0.65 vs
+  the fit, flights averaging > 100 km/h rejected as mis-paired hits), window, typical (match median,
+  ~40 of 194 hits: nothing seen after the hit). Clipped 15-250. HUD shows "≈" + 球速（約） unless fitted.
+  Recovered serves get the server's feet as contact (z 1.1 m).
+- HUD polish (user: shuttle effect not flashy, turning like the foot rings but not the same): shuttle =
+  white dot + 3 turning arcs (upright circle, 1.2 s a turn) + 0.25 s tail, drawn over the name tags;
+  speed beside it as plain shadowed text for 1 s (was a LOCK ON box); name tags 132x34 (name + thin
+  stamina bar, number only in the player panel); MOVE target = one dashed floor circle + small label.
+- Other courts' shuttles (user, 4:00 on IMG_9840: the tracker flew to the next court and back, slid to spare
+  shuttles on the floor): render.our_shuttle keeps a run of sightings only if it passes within 0.6 box heights
+  of one of our players or follows on from such a run (<= 0.4 s, at a shuttle's pace), and drops runs that
+  hardly move (floor / held); the tail never joins across a jump. Drawing only: hits still see every shuttle
+  (a false 15 km/h hit at 240.56 s sits on that jump).
+

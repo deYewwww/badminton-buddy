@@ -39,7 +39,9 @@ LOCK_S, BANNER_S = 1.0, 1.6
 SCORE_DELAY_S = 1.0          # score + 得分 banner 1 s after the rally ends (the user: once the shuttle is down,
                              # not as soon as the track stops, and well before the next serve)
 COST_S = 0.9                 # stroke-cost popup on the name tag
-TRAIL_S = 0.5                # shuttle tail (the yellow line behind the reticle), seconds
+TRAIL_S = 0.25               # shuttle tail (the yellow line behind the marker), seconds: 0.5 s was "too long"
+MARK_R = 15                  # shuttle marker: radius (px at 1080) of its three turning arcs ...
+MARK_TURN_S = 1.2            # ... one turn in this long (the foot rings: a full ring + 2 arcs, 4 s a turn)
 FILL_MAX_S = 0.8             # longest hidden stretch of a flight bridged by the flight curve (fill_flights)
 FILL_MIN_SEEN = 2            # ... and only on flights with at least this many real sightings
 HIT_GAP_S = 3.0              # hits further apart than this are separate bursts of play ...
@@ -47,6 +49,9 @@ PLAY_BEFORE_S, PLAY_AFTER_S = 0.3, 1.5  # ... the shuttle is drawn from this bef
 YELLOW = (40, 215, 255)      # reticle + tail (BGR)
 RING_R = 0.55                # foot ring radius (m)
 TRACK_MIN = 5                # shuttle drawn only on runs of at least this many real sightings
+OUR_REACH = 0.6              # ... that come this many box heights from one of our players (our_shuttle) ...
+OUR_LINK_S = 0.4             # ... or follow on from such a run within this long
+OUR_STILL = 0.006            # ... and move more than this fraction of the short side (not lying on the floor)
 POS_SMOOTH_S, BOX_SMOOTH_S = 0.3, 0.4  # display smoothing of feet (rings) and boxes (name tags)
 TAG_EASE = 0.35              # name tags move this fraction of the way to their new place per frame
 TAG_HOLD_S = 1.0             # ... and stay put this long when the player's box is lost
@@ -139,8 +144,14 @@ def load(out_dir, F, fps):
     shots = pd.read_parquet(p["shots"]) if p["shots"].exists() else pd.DataFrame()
     hits = pd.read_parquet(p["hits"]) if p["hits"].exists() else None
     rallies = pd.read_parquet(p["rallies"]) if p["rallies"].exists() else pd.DataFrame()
+    if len(rallies) and "point_source" in rallies:
+        # marked "not a rally" in the editor (a toss back between points, knocking up): no rally
+        # time, shot count or speed for it in the HUD
+        fake = (rallies.point_source == "fixed") & rallies.point_team_final.isna()
+        rallies = rallies[~fake].reset_index(drop=True)
     sh = pd.read_parquet(p["shuttle"]) if p["shuttle"].exists() else None
     shuttle = shown_track(sh, F, lens_short(out_dir)) if sh is not None else np.full((F, 2), np.nan)
+    shuttle = our_shuttle(shuttle, box, fps, lens_short(out_dir))
     shuttle = fill_flights(shuttle, hits, F, fps)
 
     step = np.r_[np.zeros((1, 4)), np.nan_to_num(np.hypot(*np.diff(pos, axis=0).transpose(2, 0, 1)))]
@@ -197,8 +208,19 @@ def shown_track(sh, F, short=1080, min_run=TRACK_MIN, max_gap=2, max_step=0.1):
 
 
 def sure(shot):
-    """A shot whose speed and type the HUD may show (hits: the physical flight fit held)."""
+    """A shot whose speed came from the physical flight fit (hits: sure)."""
     return shot is not None and bool(getattr(shot, "sure", False)) and pd.notna(shot.speed_kmh_est)
+
+
+def shot_speed(shot):
+    """km/h the HUD shows for a shot: every shot has one (hits.rough_speeds), the fitted ones exact-ish,
+    the rest rough. Older results without speed_shown_kmh: the fitted speed only."""
+    if shot is None:
+        return None
+    v = getattr(shot, "speed_shown_kmh", None)
+    if v is None or pd.isna(v):
+        v = shot.speed_kmh_est if sure(shot) else None
+    return None if v is None or pd.isna(v) else float(v)
 
 
 def hit_groups(hits, fps, max_gap_s=HIT_GAP_S):
@@ -271,6 +293,64 @@ def in_play_only(shuttle, hits, fps, short=1080, before_s=PLAY_BEFORE_S, after_s
         if ok[f:f + w].all() and np.hypot(*(seg - seg.mean(0)).T).max() <= tol:
             hide[f:f + w] = True  # the whole still window, its first and last frames too
     out[hide] = np.nan
+    return out
+
+
+def runs_of(P, short, max_step=0.1):
+    """(start, end) frame ranges of P's unbroken runs; a jump over max_step of the short side in one
+    frame starts a new run (two shuttles: shown_track keeps both when each moves smoothly)."""
+    ok = np.isfinite(P[:, 0])
+    jump = np.r_[False, np.hypot(*np.diff(P, axis=0).T) > max_step * short]
+    start = ok & (~np.r_[False, ok[:-1]] | jump)
+    a = np.flatnonzero(start)
+    out = []
+    for i, f in enumerate(a):
+        g = f + 1
+        while g < len(P) and ok[g] and not start[g]:
+            g += 1
+        out.append((f, g))
+    return out
+
+
+def our_shuttle(P, box, fps, short, reach=OUR_REACH, link_s=OUR_LINK_S, still=OUR_STILL):
+    """Keep only the shuttle of our court. At 4:00 on the user's clip the tracker flew to the
+    next court's rally and back, and slid off to spare shuttles lying beside the court: TrackNet
+    sees every shuttle in view and the flight curve joined them up. A run of sightings is ours
+    when it passes within reach (box heights) of one of our four players (every flight leaves a
+    racket) or follows on from a run that is (a long clear's apex: lost at the racket), within
+    link_s and at a shuttle's pace. A run that hardly moves (spread < still of the short side)
+    is a shuttle lying on the floor or held: never drawn."""
+    out = np.full_like(P, np.nan)
+    runs = runs_of(P, short)
+    near = np.zeros(len(runs), bool)
+    for i, (a, b) in enumerate(runs):
+        q = P[a:b]
+        if np.ptp(q, axis=0).max() < still * short:
+            continue
+        bx = box[a:b]  # (n, 4 players, 4)
+        hgt = bx[..., 3] - bx[..., 1]
+        x, y = q[:, None, 0], q[:, None, 1]
+        inside = ((x > bx[..., 0] - reach * hgt) & (x < bx[..., 2] + reach * hgt)
+                  & (y > bx[..., 1] - 1.5 * reach * hgt) & (y < bx[..., 3]))
+        near[i] = inside.any()
+    keep = near.copy()
+    moving = [np.ptp(P[a:b], axis=0).max() >= still * short for a, b in runs]
+    changed = True
+    while changed:  # follow-on runs, both ways in time
+        changed = False
+        for i, (a, b) in enumerate(runs):
+            if keep[i] or not moving[i]:
+                continue
+            for j, (c, d) in enumerate(runs):
+                if not keep[j]:
+                    continue
+                for f0, f1 in ((d - 1, a), (b - 1, c)):  # kept run ends -> this starts; this ends -> kept starts
+                    gap = f1 - f0
+                    if 0 < gap <= link_s * fps and np.hypot(*(P[f1] - P[f0])) <= 0.05 * short * gap:
+                        keep[i] = changed = True
+    for (a, b), k in zip(runs, keep):
+        if k:
+            out[a:b] = P[a:b]
     return out
 
 
@@ -406,17 +486,19 @@ class Hud:
         self.u = min(size) / 1080  # layout unit: 1 px on a 1080-wide portrait frame
         sc = S["cfg"]["score"]
         self.start_score = (sc["us"], sc["opp"])
+        self.show_score = sc.get("show", True)
 
     def draw(self, img, f):
         S, u = self.S, self.u
         if self.Ginvs is not None:  # stabilised analysis drawn on the moving original: per-frame court
             self.Ginv = self.Ginvs[min(f, len(self.Ginvs) - 1)]
         self.floor(img, f)
-        self.trail(img, f)
         self.tags(img, f)
+        self.trail(img, f)  # over the name tags: the shuttle flies where they hang
         self.lock_on(img, f)
         self.top_bar(img, f)
-        self.banner(img, f)
+        if self.show_score:
+            self.banner(img, f)
         self.player_panel(img, f)
         self.court_map(img, f)
 
@@ -448,15 +530,13 @@ class Hud:
             return
         if not np.isfinite(dest[0]):
             return
-        g = (90, 230, 170)
-        for r in (0.35, 0.6, 0.85):
-            d = floor_poly(self.Ginv, dest + r * np.array([[1, 0], [0, 1], [-1, 0], [0, -1]]))
-            cv2.polylines(img, [d], True, g, max(1, int(3 * u)), cv2.LINE_AA)
-        cv2.polylines(img, [floor_poly(self.Ginv, circle_pts(dest, 1.0))], True, g, max(1, int(2 * u)), cv2.LINE_AA)
-        tip = court.to_court(self.Ginv, [dest - [0, 1.1]])[0]
-        w = sprite(label, int(22 * u), (255, 255, 255)).shape[1]
-        panel(img, tip[0] - w / 2 - 8 * u, tip[1], tip[0] + w / 2 + 8 * u, tip[1] + 34 * u, alpha=0.85)
-        put(img, label, 22 * u, (140, 255, 200), tip[0], tip[1] + 17 * u, "cm")
+        g = (140, 230, 180)
+        ring = floor_poly(self.Ginv, circle_pts(dest, 0.7, 48))
+        for i in range(0, 48, 4):  # dashed: not to be mistaken for a player's ring
+            cv2.polylines(img, [ring[i:i + 2]], False, g, max(1, int(2 * u)), cv2.LINE_AA)
+        tip = court.to_court(self.Ginv, [dest - [0, 0.9]])[0]
+        put(img, label, 16 * u, BG, tip[0] + 1, tip[1] + 1, "ct")
+        put(img, label, 16 * u, g, tip[0], tip[1], "ct")
 
     def trail(self, img, f):
         """The tracked shuttle: a yellow reticle (corner brackets around a small ring) and a tail of
@@ -466,22 +546,29 @@ class Hud:
         P = self.S["shuttle"][max(0, f - int(TRAIL_S * self.fps)):f + 1]
         if not np.isfinite(P[-1, 0]):
             return
-        run = len(P) - 1  # the tail is the unbroken run ending now
-        while run > 0 and np.isfinite(P[run - 1, 0]):
+        run = len(P) - 1  # the tail is the unbroken run ending now, never across a jump
+        jump = 0.1 * min(self.W, self.Hh)
+        while run > 0 and np.isfinite(P[run - 1, 0]) and np.hypot(*(P[run] - P[run - 1])) <= jump:
             run -= 1
         Q = P[run:]
+        if len(Q) >= 3:  # a smooth thin line (like the foot rings): 3-point average, drawn at sub-pixel precision
+            Q = np.r_[Q[:1], (Q[:-2] + Q[1:-1] + Q[2:]) / 3, Q[-1:]]
         for k in range(1, len(Q)):
             w = k / max(len(Q) - 1, 1)
-            col = tuple(int(c * (0.35 + 0.65 * w)) for c in YELLOW)
-            cv2.line(img, tuple(np.int32(Q[k - 1])), tuple(np.int32(Q[k])), col, max(1, int((1 + 2 * w) * u)), cv2.LINE_AA)
-        x, y = np.int32(P[-1])
-        cv2.circle(img, (int(x), int(y)), max(3, int(8 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
-        a, b, t = int(24 * u), int(9 * u), max(1, int(3 * u))
-        for sx in (-1, 1):
-            for sy in (-1, 1):
-                cx, cy = x + sx * a, y + sy * a
-                cv2.line(img, (cx, cy), (cx - sx * b, cy), YELLOW, t, cv2.LINE_AA)
-                cv2.line(img, (cx, cy), (cx, cy - sy * b), YELLOW, t, cv2.LINE_AA)
+            col = tuple(int(c * (0.3 + 0.7 * w)) for c in YELLOW)  # fades towards its end
+            cv2.line(img, tuple(np.int32(Q[k - 1] * 4)), tuple(np.int32(Q[k] * 4)), col, max(1, int(2 * u)), cv2.LINE_AA, 2)
+        self.marker(img, f, P[-1])
+
+    def marker(self, img, f, p):
+        """The shuttle: a small dot inside three short arcs that turn (no full ring, upright circle,
+        faster and the other way round from the foot rings). Corner brackets were too busy."""
+        u, sub = self.u, 4  # drawn at 1/4 px (shift 2) so it turns smoothly
+        c = tuple(np.int32(np.round(p * sub)))
+        r = int(MARK_R * u * sub)
+        a0 = -(f / self.fps) * 360 / MARK_TURN_S
+        for k in range(3):
+            cv2.ellipse(img, c, (r, r), 0, a0 + k * 120, a0 + k * 120 + 70, YELLOW, max(1, int(2 * u)), cv2.LINE_AA, 2)
+        cv2.circle(img, c, int(3 * u * sub), WHITE, -1, cv2.LINE_AA, 2)
 
     def ring(self, img, f, p, col):
         """Perspective ring under a player: one thin solid ring and two short arcs on it that turn
@@ -512,7 +599,7 @@ class Hud:
     def tags(self, img, f):
         """Name + stamina over each head, stacked so they never overlap."""
         S, u = self.S, self.u
-        tw, th = 250 * u, 58 * u
+        tw, th = 132 * u, 34 * u
         items = []
         for k, pid in enumerate(PIDS):
             b = S["box"][f, k]
@@ -522,7 +609,7 @@ class Hud:
                     b = last[3]
                 else:
                     continue
-            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 40 * u, k, pid, (b[0] + b[2]) / 2, b[1], b])
+            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 24 * u, k, pid, (b[0] + b[2]) / 2, b[1], b])
         # stack in a steady order (nearest player first: depth changes slowly, unlike the box
         # tops, whose order flipped back and forth when partners overlapped), then let each tag
         # glide to its place instead of jumping
@@ -530,10 +617,10 @@ class Hud:
         items.sort(key=depth)
         placed = []
         for it in items:
-            x, y = min(max(it[0], 4), self.W - tw - 4), max(it[1], 120 * u)
+            x, y = min(max(it[0], 4), self.W - tw - 4), max(it[1], 145 * u)
             for px, py in placed:
-                if abs(px - x) < tw and abs(py - y) < th + 6 * u:
-                    y = py - th - 6 * u
+                if abs(px - x) < tw and abs(py - y) < th + 4 * u:
+                    y = py - th - 4 * u
             placed.append((x, y))
             k, pid, hx, hy, b = it[2:]
             last = self.tag_at.get(pid)
@@ -544,12 +631,11 @@ class Hud:
             else:
                 self.tag_at[pid] = (x, y, last[2], b)  # keep the time it was last really seen
             col = S["colors"][pid]
-            cv2.line(img, (int(x + tw / 2), int(y + th)), (int(hx), int(hy - 6 * u)), col, max(1, int(2 * u)), cv2.LINE_AA)
-            panel(img, x, y, x + tw, y + th, col)
+            cv2.line(img, (int(x + tw / 2), int(y + th)), (int(hx), int(hy - 6 * u)), col, 1, cv2.LINE_AA)
+            panel(img, x, y, x + tw, y + th, col, alpha=0.7)
             stam = S["stamina"][f, k]
-            put(img, S["names"][pid], 26 * u, col, x + 14 * u, y + 8 * u)
-            put(img, f"{stam:.0f}", 26 * u, RED if stam < 15 else WHITE, x + tw - 12 * u, y + 8 * u, "rt")
-            bar(img, x + 14 * u, y + th - 16 * u, tw - 28 * u, 7 * u, stam / 100, col)
+            put(img, S["names"][pid], 18 * u, col, x + 10 * u, y + 4 * u)
+            bar(img, x + 10 * u, y + th - 9 * u, tw - 18 * u, 4 * u, stam / 100, RED if stam < 15 else col)
             for g, kk, c, kind in self.recent_costs(f, k):  # what that stroke cost, floating up
                 age = (f - g) / self.fps
                 put(img, f"-{c:.1f}", 22 * u,
@@ -569,19 +655,30 @@ class Hud:
         return (sh.iloc[-1] if len(sh) else None), len(sh), S["rallies"].iloc[r]
 
     def lock_on(self, img, f):
+        """Speed of the shot just hit, beside the shuttle marker for LOCK_S: plain text, no box."""
         S, u = self.S, self.u
         shot, _, _ = self.current_shot(f)
-        if not sure(shot) or (f - shot.frame) / self.fps > LOCK_S:
+        v = shot_speed(shot)
+        if v is None or (f - shot.frame) / self.fps > LOCK_S:
             return
         # on the shuttle as it is now, or not at all: pinned to where it was hit, the reticle hung
         # in the air while the camera panned (the user saw it as the tracker floating)
         p = S["shuttle"][f]
         if not np.isfinite(p[0]):
             return
-        x, y = p[0] + 46 * u, p[1] - 76 * u
-        panel(img, x, y, x + 200 * u, y + 62 * u, YELLOW)
-        put(img, "LOCK ON", 18 * u, YELLOW, x + 14 * u, y + 6 * u)
-        put(img, f"{shot.speed_kmh_est:.0f} km/h", 28 * u, WHITE, x + 14 * u, y + 28 * u)
+        x, y = p[0] + (MARK_R + 10) * u, p[1] - (MARK_R + 4) * u
+        a = (f - shot.frame) / self.fps / LOCK_S  # fades out over its last third
+        if a > 2 / 3:
+            roi = img.copy()
+        text = f"{'' if sure(shot) else '≈'}{v:.0f}"
+        d = max(1, int(2 * u))  # a dark shadow keeps it readable on the banner and the tags
+        w = put(img, text, 26 * u, BG, x + d, y + d, "lb")
+        put(img, "km/h", 15 * u, BG, x + w + 4 * u + d, y - 3 * u + d, "lb")
+        put(img, text, 26 * u, WHITE, x, y, "lb")
+        put(img, "km/h", 15 * u, YELLOW, x + w + 4 * u, y - 3 * u, "lb")
+        if a > 2 / 3:
+            k = (a - 2 / 3) * 3
+            img[:] = cv2.addWeighted(img, 1 - k, roi, k, 0)
 
     def top_bar(self, img, f):
         S, u = self.S, self.u
@@ -595,9 +692,10 @@ class Hud:
             t = rally.duration_s if rally is not None else 0.0
         else:
             t = (f - rally.start_frame) / self.fps
-        widths = [235, 235, 330, 200]
+        widths = [235, 235, 330, 200][:4 if self.show_score else 3]
         x = m
-        heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "搜尋羽球", "比分"]
+        v = shot_speed(shot)
+        heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "球速（約）", "比分"]
         for i, (wd, head) in enumerate(zip(widths, heads)):
             wd *= u
             panel(img, x, y, x + wd, y + h, (240, 200, 54) if i == 1 else None)
@@ -608,13 +706,19 @@ class Hud:
             elif i == 1:
                 put(img, f"{n} 拍", 38 * u, WHITE, x + 16 * u, vy)
             elif i == 2:
-                if sure(shot):
-                    w = put(img, f"{shot.speed_kmh_est:.0f}", 38 * u, WHITE, x + 16 * u, vy)
+                if v is not None:
+                    w = put(img, f"{'' if sure(shot) else '≈'}{v:.0f}", 38 * u, WHITE, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 26 * u + w, vy + 14 * u)
-                    put(img, TYPE_LABEL.get(shot.shot_type, ""), 24 * u, (140, 255, 200), x + wd - 14 * u, vy + 8 * u, "rt")
                 else:
                     put(img, "---", 38 * u, GREY, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 110 * u, vy + 14 * u)
+                if shot is not None:  # only the smash is called (see hits.shown_types); the line is a guess
+                    kind = TYPE_LABEL.get(getattr(shot, "shown_type", None) or "", "")
+                    line = {"straight": "直線", "cross": "斜線"}.get(getattr(shot, "line", None) or "", "")
+                    if kind:
+                        put(img, kind, 24 * u, (140, 255, 200), x + wd - 14 * u, vy - 4 * u, "rt")
+                    if line:
+                        put(img, f"{line}（推測）", 17 * u, GREY, x + wd - 14 * u, vy + 26 * u, "rt")
             else:
                 us, opp = self.score_at(f)
                 w = put(img, f"{us}", 38 * u, S["colors"]["P1"], x + 16 * u, vy)

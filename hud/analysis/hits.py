@@ -568,6 +568,136 @@ def detect(shuttle, players, H, cam, fps, img_h=1080, serve_answer_s=1.25, cuts=
     return df
 
 
+SERVE_GAP_S = 2.5     # a hit after this long without one opens play: look for the serve before it
+SERVE_LOOK_S = 2.0    # ... in the flight that came in, up to this long back
+SERVE_RUN_MIN = 4     # ... which must have at least this many real sightings
+SERVE_LEAD_S = 0.2    # ... and start at least this long before that hit
+SERVE_Z_M = 1.1       # a recovered serve's contact: above the server's feet at this height
+
+
+def add_serves(df, shuttle, players, fps):
+    """The serve is mostly missed: on the user's 16 hand-marked rallies the first hit found came
+    0.7-0.9 s after the marked serve (the return), so rallies started late and a shot short, and
+    the 1-2 shot ones were dropped as noise. The serve is where the flight into that first hit
+    began: walk back over the real sightings before it (gaps up to 3 frames) and put a hit by the
+    other side at the start of that run (the shuttle shows a frame or so after leaving the racket;
+    at contact it is often behind the server). No run, no serve: nothing is invented."""
+    if df.empty:
+        return df
+    real = (shuttle.visible & ~shuttle.interpolated & ~shuttle.inpainted).to_numpy()
+    px = shuttle[["x_px", "y_px"]].to_numpy(float)
+    ts = shuttle.timestamp.to_numpy(float)
+    df = df.sort_values("frame").reset_index(drop=True)
+    first = np.r_[True, np.diff(df.timestamp.to_numpy()) > SERVE_GAP_S]
+    add = []
+    obs = players[players.observed.astype(bool) & players.box_x1.notna()]
+    for i in np.flatnonzero(first):
+        h = df.iloc[i]
+        f1, k, start, gap = int(h.frame), int(h.frame) - 1, None, 0
+        while k > 0 and ts[f1] - ts[k] < SERVE_LOOK_S:
+            if real[k]:
+                start, gap = k, 0
+            else:
+                gap += 1
+                if gap > 3 and start is not None:
+                    break
+            k -= 1
+        if start is None or real[start:f1].sum() < SERVE_RUN_MIN or ts[f1] - ts[start] < SERVE_LEAD_S:
+            continue
+        fs = max(0, start - 1)
+        team = "opp" if h.team == "us" else "us"
+        cand = obs[(obs.team == team) & (obs.frame.between(fs - 3, fs + 3))]
+        feet = (np.nan, np.nan)
+        if len(cand):  # the server: their player nearest where the shuttle first shows
+            c = np.c_[(cand.box_x1 + cand.box_x2) / 2, (cand.box_y1 + cand.box_y2) / 2]
+            j = int(np.argmin(np.hypot(*(c - px[start]).T)))
+            pid, feet = cand.player_id.iat[j], (cand.x_m.iat[j], cand.y_m.iat[j])
+        else:
+            pid = "P1" if team == "us" else "P3"
+        row = {c: np.nan for c in df.columns}
+        row.update(contact_x_m=feet[0], contact_y_m=feet[1], contact_z_m=SERVE_Z_M)  # for its rough speed
+        row.update(frame=fs, timestamp=round(float(ts[fs]), 4), player_id=pid, team=team,
+                   shuttle_x_px=px[start, 0], shuttle_y_px=px[start, 1], shot_type="serve", landing_kind="intercept",
+                   end_frame=f1, speed_method="serve", sure=False, serve=True, turn_deg=0.0)
+        add.append(row)
+    if "serve" not in df:
+        df["serve"] = False
+    if add:
+        df = pd.concat([df, pd.DataFrame(add)], ignore_index=True).sort_values("frame", ignore_index=True)
+        df["shot_no"] = np.arange(1, len(df) + 1)
+    print(f"Serves recovered before {len(add)} of {int(first.sum())} openings")
+    return df
+
+
+SMASH_VY = 5.0         # shown_type: image speed downwards over the 6 frames after the hit (px/frame per
+SMASH_Z_M = 1.4       # 1000 px of frame height) and contact height for a smash. On the user's 58 typed hits
+                      # found by the detector: 6 of 10 smashes, 2 others (a lift, a drop) wrongly. The rule
+                      # types were right 9 % of the time and a classifier for all 6 types barely beat "always
+                      # lift" (60 vs 57 %), so only the smash is shown
+LINE_SIDE_M = 0.8     # line_of: hitter and receiver must each stand this far from the centre line
+ROUGH_KMH = (15.0, 250.0)  # rough speeds (speed_shown_kmh) are clipped to this (fits on the clip: 12-199)
+FLIGHT_AVG_MAX_KMH = 100.0  # a whole flight averaging more is two hits paired wrongly (8-11 m in 0.2-0.3 s
+                            # on the user's clip: a false hit or a serve found too late), not a speed
+
+
+def shown_types(df, shuttle, frame_h):
+    """shown_type ("smash" or None), line ("straight" / "cross" / None) and a speed for every hit
+    (speed_shown_kmh, speed_src), for the HUD."""
+    if df.empty:
+        return df
+    df = df.sort_values("frame", ignore_index=True)
+    real = (shuttle.visible & ~shuttle.interpolated & ~shuttle.inpainted).to_numpy()
+    P = np.where(real[:, None], shuttle[["x_px", "y_px"]].to_numpy(float), np.nan)
+    vy = []
+    for f in df.frame.astype(int):
+        seg = P[f + 1:f + 7]
+        ok = np.flatnonzero(np.isfinite(seg[:, 0]))
+        vy.append((seg[ok[-1], 1] - seg[ok[0], 1]) / (ok[-1] - ok[0]) / frame_h * 1000 if len(ok) >= 2 else np.nan)
+    df = df.copy()
+    df["vy_out"] = np.round(vy, 2)
+    df["shown_type"] = np.where((df.vy_out > SMASH_VY) & (df.contact_z_m > SMASH_Z_M), "smash", None)
+    # straight / cross (a guess): where this shot was hit from vs where it was played next (or landed),
+    # left / right of the centre line; too near the centre: no call
+    nxt_x = df.contact_x_m.shift(-1).where(df.timestamp.shift(-1) - df.timestamp < MISSED_HIT_S)
+    tgt = nxt_x.fillna(df.landing_x)
+    a, b = df.contact_x_m - COURT_W / 2, tgt - COURT_W / 2
+    sure = (a.abs() > LINE_SIDE_M) & (b.abs() > LINE_SIDE_M)
+    df["line"] = np.where(sure & (a * b > 0), "straight", np.where(sure & (a * b < 0), "cross", None))
+    df.loc[df.serve.fillna(False).astype(bool), "line"] = None  # a serve always goes across
+    return rough_speeds(df, 1 / np.median(np.diff(shuttle.timestamp)))
+
+
+def rough_speeds(df, fps):
+    """A speed for every hit (the user: every shot shows one, rough is fine), best source first:
+    fit = the physical flight fit (sure); flight = straight distance to the next contact (or the
+    landing) over the flight time, undone for drag (on the 21 fitted hits of the user's clip it
+    tracked the fit with r 0.65, median ratio 0.92); window = the 0.1 s fallback (3-409 km/h);
+    typical = this match's median of the others (smash / not), when nothing at all was seen."""
+    c0 = df[["contact_x_m", "contact_y_m", "contact_z_m"]].to_numpy(float)
+    dt = (df.timestamp.shift(-1) - df.timestamp).to_numpy(float, copy=True)
+    c1 = np.roll(c0, -1, axis=0)
+    land = np.c_[df.landing_x, df.landing_y, np.zeros(len(df))]
+    t_land = (df.end_frame - df.frame).to_numpy(float) / fps
+    last = ~(dt < MISSED_HIT_S)  # no next contact in this flight: to the landing
+    c1[last], dt[last] = land[last], t_land[last]
+    dist = np.linalg.norm(c1 - c0, axis=1)
+    ok = np.isfinite(dist) & (dt > 0.1) & (dt < MISSED_HIT_S)
+    ok[ok] = dist[ok] / dt[ok] * 3.6 <= FLIGHT_AVG_MAX_KMH
+    flight = np.full(len(df), np.nan)
+    flight[ok] = [from_window_avg(d / t, t) * 3.6 for d, t in zip(dist[ok], dt[ok])]
+    fit = df.speed_kmh_est.where(df.sure.fillna(False).astype(bool)).to_numpy(float)
+    win = df.speed_kmh_est.to_numpy(float, copy=True)
+    kmh = np.where(np.isfinite(fit), fit, np.where(np.isfinite(flight), flight, win))
+    src = np.where(np.isfinite(fit), "fit", np.where(np.isfinite(flight), "flight", np.where(np.isfinite(win), "window", "typical")))
+    kmh = np.clip(kmh, *ROUGH_KMH)
+    smash = (df.shown_type == "smash").to_numpy()
+    for grp in (smash, ~smash):
+        known = np.isfinite(kmh) & grp
+        kmh[grp & ~known] = np.median(kmh[known]) if known.any() else np.nanmedian(kmh) if np.isfinite(kmh).any() else 100.0
+    df["speed_shown_kmh"], df["speed_src"] = np.round(kmh), src
+    return df
+
+
 def run(shuttle_path, players_path, calib_path, out):
     shuttle, players = pd.read_parquet(shuttle_path), pd.read_parquet(players_path)
     H, calib = load(calib_path)
@@ -580,6 +710,7 @@ def run(shuttle_path, players_path, calib_path, out):
     lens = native_size(calib["video"]) or calib["frame_size"]
     df = detect(shuttle, players, H, cam, fps, min(lens), config.load()["rally"]["serve_answer_s"],
                 cuts=cuts_of(calib["video"]), frame_h=calib["frame_size"][1])
+    df = shown_types(add_serves(df, shuttle, players, fps), shuttle, calib["frame_size"][1])
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)  # overwrite: idempotent
     print(f"Wrote {out}: {len(df)} hits")

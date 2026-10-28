@@ -134,6 +134,27 @@ def set_winner(mid, rally_id, team):
     fx.to_csv(f, index=False)
 
 
+SHOT_TYPES = ("smash", "clear", "drop", "drive", "net", "lift")  # keys 1-6 in the editor's ⑦
+
+
+def hit_marks(mid, t=None, kind=None, shot=None):
+    """Hand-marked serves, hits (with the shot type when known) and rally ends (editor ⑦): the answer
+    key for serves, shot counts, rally times and shot types (analysis/evaluate.truth_from_marks).
+    kind 'remove' drops the mark at t."""
+    f = match_dir(mid) / "hit_marks.csv"
+    df = pd.read_csv(f) if f.exists() else pd.DataFrame(columns=["t", "kind", "shot"])
+    if "shot" not in df:
+        df["shot"] = None
+    if t is not None:
+        df = df[(df.t - float(t)).abs() > 0.02]
+        if kind in ("serve", "hit", "end"):
+            df = pd.concat([df, pd.DataFrame([dict(t=round(float(t), 3), kind=kind,
+                                                   shot=shot if kind == "hit" and shot in SHOT_TYPES else None)])])
+        df = df.sort_values("t")
+        df.to_csv(f, index=False)
+    return json.loads(df.to_json(orient="records"))
+
+
 def manual_point(mid, t, team):
     """Add a point at video time t (s) for a rally the analysis missed, or remove the one at t
     (team='remove'). Stored in manual_points.csv; takes effect on the next rallies rerun."""
@@ -254,6 +275,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(jpg)))
                 self.end_headers()
                 return self.wfile.write(jpg.tobytes())
+            if u.path == "/api/video":  # the original upload (hit marking: no HUD numbers to sway the count)
+                return self._file(video_of(q["id"]))
+            if u.path == "/api/hitmarks":
+                return self._json(hit_marks(q["id"]))
             if u.path == "/api/status":
                 return self._json(JOB)
             if u.path == "/api/rallies":
@@ -345,6 +370,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/label":  # {f, x, y, state: shuttle/none/hidden/remove}
                 from hud.detection import finetune
                 return self._json({"ok": True, "n": finetune.save_label(match_dir(mid), b["f"], b.get("x", 0), b.get("y", 0), b["state"])})
+            if u.path == "/api/hitmark":  # {t, kind: serve/hit/end/remove, shot: smash/clear/drop/drive/net/lift}
+                return self._json(hit_marks(mid, b["t"], b["kind"], b.get("shot")))
             if u.path == "/api/point":  # {t, team: us/opp/remove}
                 return self._json({"ok": True, "n": manual_point(mid, b["t"], b["team"])})
             self._json({"error": "not found"}, 404)

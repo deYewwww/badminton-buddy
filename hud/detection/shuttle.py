@@ -11,6 +11,7 @@ Dead time (players standing between points, picking up the shuttle) is skipped: 
 ~85% of the analysis compute and has nothing to find there. idle_frames() marks it from the
 player track, which the players stage has already written; see [shuttle] in config.toml.
 """
+import os
 from pathlib import Path
 
 import cv2
@@ -55,9 +56,10 @@ def _load_models(device, finetuned=True):
     nets = []
     for name in ("TrackNet", "InpaintNet"):
         path = _joined(CKPT_DIR / f"{name}_best.pt")
-        if name == "TrackNet" and finetuned and (CKPT_DIR / "TrackNet_ft.pt").exists():
-            path = CKPT_DIR / "TrackNet_ft.pt"
-            print("TrackNet: fine-tuned weights (TrackNet_ft.pt)")
+        ft = Path(os.environ.get("HUD_TRACKNET_FT", CKPT_DIR / "TrackNet_ft.pt"))  # a candidate to try on a copy
+        if name == "TrackNet" and finetuned and ft.exists():
+            path = ft
+            print(f"TrackNet: fine-tuned weights ({ft.name})")
         if not path.exists():
             raise SystemExit(f"Missing {path}. Download the TrackNetV3 checkpoints, see README.")
         ck = torch.load(path, map_location="cpu", weights_only=False)  # upstream pickles a param dict
