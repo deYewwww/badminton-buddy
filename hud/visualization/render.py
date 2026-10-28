@@ -39,7 +39,9 @@ LOCK_S, BANNER_S = 1.0, 1.6
 SCORE_DELAY_S = 1.0          # score + 得分 banner 1 s after the rally ends (the user: once the shuttle is down,
                              # not as soon as the track stops, and well before the next serve)
 COST_S = 0.9                 # stroke-cost popup on the name tag
-TRAIL_S = 0.25               # shuttle tail (the yellow line behind the reticle), seconds: 0.5 s was "too long"
+TRAIL_S = 0.25               # shuttle tail (the yellow line behind the marker), seconds: 0.5 s was "too long"
+MARK_R = 15                  # shuttle marker: radius (px at 1080) of its three turning arcs ...
+MARK_TURN_S = 1.2            # ... one turn in this long (the foot rings: a full ring + 2 arcs, 4 s a turn)
 FILL_MAX_S = 0.8             # longest hidden stretch of a flight bridged by the flight curve (fill_flights)
 FILL_MIN_SEEN = 2            # ... and only on flights with at least this many real sightings
 HIT_GAP_S = 3.0              # hits further apart than this are separate bursts of play ...
@@ -202,8 +204,19 @@ def shown_track(sh, F, short=1080, min_run=TRACK_MIN, max_gap=2, max_step=0.1):
 
 
 def sure(shot):
-    """A shot whose speed and type the HUD may show (hits: the physical flight fit held)."""
+    """A shot whose speed came from the physical flight fit (hits: sure)."""
     return shot is not None and bool(getattr(shot, "sure", False)) and pd.notna(shot.speed_kmh_est)
+
+
+def shot_speed(shot):
+    """km/h the HUD shows for a shot: every shot has one (hits.rough_speeds), the fitted ones exact-ish,
+    the rest rough. Older results without speed_shown_kmh: the fitted speed only."""
+    if shot is None:
+        return None
+    v = getattr(shot, "speed_shown_kmh", None)
+    if v is None or pd.isna(v):
+        v = shot.speed_kmh_est if sure(shot) else None
+    return None if v is None or pd.isna(v) else float(v)
 
 
 def hit_groups(hits, fps, max_gap_s=HIT_GAP_S):
@@ -418,8 +431,8 @@ class Hud:
         if self.Ginvs is not None:  # stabilised analysis drawn on the moving original: per-frame court
             self.Ginv = self.Ginvs[min(f, len(self.Ginvs) - 1)]
         self.floor(img, f)
-        self.trail(img, f)
         self.tags(img, f)
+        self.trail(img, f)  # over the name tags: the shuttle flies where they hang
         self.lock_on(img, f)
         self.top_bar(img, f)
         if self.show_score:
@@ -455,15 +468,13 @@ class Hud:
             return
         if not np.isfinite(dest[0]):
             return
-        g = (90, 230, 170)
-        for r in (0.35, 0.6, 0.85):
-            d = floor_poly(self.Ginv, dest + r * np.array([[1, 0], [0, 1], [-1, 0], [0, -1]]))
-            cv2.polylines(img, [d], True, g, max(1, int(3 * u)), cv2.LINE_AA)
-        cv2.polylines(img, [floor_poly(self.Ginv, circle_pts(dest, 1.0))], True, g, max(1, int(2 * u)), cv2.LINE_AA)
-        tip = court.to_court(self.Ginv, [dest - [0, 1.1]])[0]
-        w = sprite(label, int(22 * u), (255, 255, 255)).shape[1]
-        panel(img, tip[0] - w / 2 - 8 * u, tip[1], tip[0] + w / 2 + 8 * u, tip[1] + 34 * u, alpha=0.85)
-        put(img, label, 22 * u, (140, 255, 200), tip[0], tip[1] + 17 * u, "cm")
+        g = (140, 230, 180)
+        ring = floor_poly(self.Ginv, circle_pts(dest, 0.7, 48))
+        for i in range(0, 48, 4):  # dashed: not to be mistaken for a player's ring
+            cv2.polylines(img, [ring[i:i + 2]], False, g, max(1, int(2 * u)), cv2.LINE_AA)
+        tip = court.to_court(self.Ginv, [dest - [0, 0.9]])[0]
+        put(img, label, 16 * u, BG, tip[0] + 1, tip[1] + 1, "ct")
+        put(img, label, 16 * u, g, tip[0], tip[1], "ct")
 
     def trail(self, img, f):
         """The tracked shuttle: a yellow reticle (corner brackets around a small ring) and a tail of
@@ -483,14 +494,18 @@ class Hud:
             w = k / max(len(Q) - 1, 1)
             col = tuple(int(c * (0.3 + 0.7 * w)) for c in YELLOW)  # fades towards its end
             cv2.line(img, tuple(np.int32(Q[k - 1] * 4)), tuple(np.int32(Q[k] * 4)), col, max(1, int(2 * u)), cv2.LINE_AA, 2)
-        x, y = np.int32(P[-1])
-        cv2.circle(img, (int(x), int(y)), max(3, int(8 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
-        a, b, t = int(24 * u), int(9 * u), max(1, int(3 * u))
-        for sx in (-1, 1):
-            for sy in (-1, 1):
-                cx, cy = x + sx * a, y + sy * a
-                cv2.line(img, (cx, cy), (cx - sx * b, cy), YELLOW, t, cv2.LINE_AA)
-                cv2.line(img, (cx, cy), (cx, cy - sy * b), YELLOW, t, cv2.LINE_AA)
+        self.marker(img, f, P[-1])
+
+    def marker(self, img, f, p):
+        """The shuttle: a small dot inside three short arcs that turn (no full ring, upright circle,
+        faster and the other way round from the foot rings). Corner brackets were too busy."""
+        u, sub = self.u, 4  # drawn at 1/4 px (shift 2) so it turns smoothly
+        c = tuple(np.int32(np.round(p * sub)))
+        r = int(MARK_R * u * sub)
+        a0 = -(f / self.fps) * 360 / MARK_TURN_S
+        for k in range(3):
+            cv2.ellipse(img, c, (r, r), 0, a0 + k * 120, a0 + k * 120 + 70, YELLOW, max(1, int(2 * u)), cv2.LINE_AA, 2)
+        cv2.circle(img, c, int(3 * u * sub), WHITE, -1, cv2.LINE_AA, 2)
 
     def ring(self, img, f, p, col):
         """Perspective ring under a player: one thin solid ring and two short arcs on it that turn
@@ -521,7 +536,7 @@ class Hud:
     def tags(self, img, f):
         """Name + stamina over each head, stacked so they never overlap."""
         S, u = self.S, self.u
-        tw, th = 250 * u, 58 * u
+        tw, th = 132 * u, 34 * u
         items = []
         for k, pid in enumerate(PIDS):
             b = S["box"][f, k]
@@ -531,7 +546,7 @@ class Hud:
                     b = last[3]
                 else:
                     continue
-            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 40 * u, k, pid, (b[0] + b[2]) / 2, b[1], b])
+            items.append([(b[0] + b[2]) / 2 - tw / 2, b[1] - th - 24 * u, k, pid, (b[0] + b[2]) / 2, b[1], b])
         # stack in a steady order (nearest player first: depth changes slowly, unlike the box
         # tops, whose order flipped back and forth when partners overlapped), then let each tag
         # glide to its place instead of jumping
@@ -539,10 +554,10 @@ class Hud:
         items.sort(key=depth)
         placed = []
         for it in items:
-            x, y = min(max(it[0], 4), self.W - tw - 4), max(it[1], 120 * u)
+            x, y = min(max(it[0], 4), self.W - tw - 4), max(it[1], 145 * u)
             for px, py in placed:
-                if abs(px - x) < tw and abs(py - y) < th + 6 * u:
-                    y = py - th - 6 * u
+                if abs(px - x) < tw and abs(py - y) < th + 4 * u:
+                    y = py - th - 4 * u
             placed.append((x, y))
             k, pid, hx, hy, b = it[2:]
             last = self.tag_at.get(pid)
@@ -553,12 +568,11 @@ class Hud:
             else:
                 self.tag_at[pid] = (x, y, last[2], b)  # keep the time it was last really seen
             col = S["colors"][pid]
-            cv2.line(img, (int(x + tw / 2), int(y + th)), (int(hx), int(hy - 6 * u)), col, max(1, int(2 * u)), cv2.LINE_AA)
-            panel(img, x, y, x + tw, y + th, col)
+            cv2.line(img, (int(x + tw / 2), int(y + th)), (int(hx), int(hy - 6 * u)), col, 1, cv2.LINE_AA)
+            panel(img, x, y, x + tw, y + th, col, alpha=0.7)
             stam = S["stamina"][f, k]
-            put(img, S["names"][pid], 26 * u, col, x + 14 * u, y + 8 * u)
-            put(img, f"{stam:.0f}", 26 * u, RED if stam < 15 else WHITE, x + tw - 12 * u, y + 8 * u, "rt")
-            bar(img, x + 14 * u, y + th - 16 * u, tw - 28 * u, 7 * u, stam / 100, col)
+            put(img, S["names"][pid], 18 * u, col, x + 10 * u, y + 4 * u)
+            bar(img, x + 10 * u, y + th - 9 * u, tw - 18 * u, 4 * u, stam / 100, RED if stam < 15 else col)
             for g, kk, c, kind in self.recent_costs(f, k):  # what that stroke cost, floating up
                 age = (f - g) / self.fps
                 put(img, f"-{c:.1f}", 22 * u,
@@ -578,19 +592,30 @@ class Hud:
         return (sh.iloc[-1] if len(sh) else None), len(sh), S["rallies"].iloc[r]
 
     def lock_on(self, img, f):
+        """Speed of the shot just hit, beside the shuttle marker for LOCK_S: plain text, no box."""
         S, u = self.S, self.u
         shot, _, _ = self.current_shot(f)
-        if not sure(shot) or (f - shot.frame) / self.fps > LOCK_S:
+        v = shot_speed(shot)
+        if v is None or (f - shot.frame) / self.fps > LOCK_S:
             return
         # on the shuttle as it is now, or not at all: pinned to where it was hit, the reticle hung
         # in the air while the camera panned (the user saw it as the tracker floating)
         p = S["shuttle"][f]
         if not np.isfinite(p[0]):
             return
-        x, y = p[0] + 46 * u, p[1] - 76 * u
-        panel(img, x, y, x + 200 * u, y + 62 * u, YELLOW)
-        put(img, "LOCK ON", 18 * u, YELLOW, x + 14 * u, y + 6 * u)
-        put(img, f"{shot.speed_kmh_est:.0f} km/h", 28 * u, WHITE, x + 14 * u, y + 28 * u)
+        x, y = p[0] + (MARK_R + 10) * u, p[1] - (MARK_R + 4) * u
+        a = (f - shot.frame) / self.fps / LOCK_S  # fades out over its last third
+        if a > 2 / 3:
+            roi = img.copy()
+        text = f"{'' if sure(shot) else '≈'}{v:.0f}"
+        d = max(1, int(2 * u))  # a dark shadow keeps it readable on the banner and the tags
+        w = put(img, text, 26 * u, BG, x + d, y + d, "lb")
+        put(img, "km/h", 15 * u, BG, x + w + 4 * u + d, y - 3 * u + d, "lb")
+        put(img, text, 26 * u, WHITE, x, y, "lb")
+        put(img, "km/h", 15 * u, YELLOW, x + w + 4 * u, y - 3 * u, "lb")
+        if a > 2 / 3:
+            k = (a - 2 / 3) * 3
+            img[:] = cv2.addWeighted(img, 1 - k, roi, k, 0)
 
     def top_bar(self, img, f):
         S, u = self.S, self.u
@@ -606,7 +631,8 @@ class Hud:
             t = (f - rally.start_frame) / self.fps
         widths = [235, 235, 330, 200][:4 if self.show_score else 3]
         x = m
-        heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "搜尋羽球", "比分"]
+        v = shot_speed(shot)
+        heads = ["回合時間", "擊球數", "球速（估）" if sure(shot) else "球速（約）", "比分"]
         for i, (wd, head) in enumerate(zip(widths, heads)):
             wd *= u
             panel(img, x, y, x + wd, y + h, (240, 200, 54) if i == 1 else None)
@@ -617,8 +643,8 @@ class Hud:
             elif i == 1:
                 put(img, f"{n} 拍", 38 * u, WHITE, x + 16 * u, vy)
             elif i == 2:
-                if sure(shot):
-                    w = put(img, f"{shot.speed_kmh_est:.0f}", 38 * u, WHITE, x + 16 * u, vy)
+                if v is not None:
+                    w = put(img, f"{'' if sure(shot) else '≈'}{v:.0f}", 38 * u, WHITE, x + 16 * u, vy)
                     put(img, "km/h", 20 * u, GREY, x + 26 * u + w, vy + 14 * u)
                 else:
                     put(img, "---", 38 * u, GREY, x + 16 * u, vy)

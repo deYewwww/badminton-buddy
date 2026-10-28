@@ -572,6 +572,7 @@ SERVE_GAP_S = 2.5     # a hit after this long without one opens play: look for t
 SERVE_LOOK_S = 2.0    # ... in the flight that came in, up to this long back
 SERVE_RUN_MIN = 4     # ... which must have at least this many real sightings
 SERVE_LEAD_S = 0.2    # ... and start at least this long before that hit
+SERVE_Z_M = 1.1       # a recovered serve's contact: above the server's feet at this height
 
 
 def add_serves(df, shuttle, players, fps):
@@ -606,12 +607,15 @@ def add_serves(df, shuttle, players, fps):
         fs = max(0, start - 1)
         team = "opp" if h.team == "us" else "us"
         cand = obs[(obs.team == team) & (obs.frame.between(fs - 3, fs + 3))]
+        feet = (np.nan, np.nan)
         if len(cand):  # the server: their player nearest where the shuttle first shows
             c = np.c_[(cand.box_x1 + cand.box_x2) / 2, (cand.box_y1 + cand.box_y2) / 2]
-            pid = cand.player_id.iat[int(np.argmin(np.hypot(*(c - px[start]).T)))]
+            j = int(np.argmin(np.hypot(*(c - px[start]).T)))
+            pid, feet = cand.player_id.iat[j], (cand.x_m.iat[j], cand.y_m.iat[j])
         else:
             pid = "P1" if team == "us" else "P3"
         row = {c: np.nan for c in df.columns}
+        row.update(contact_x_m=feet[0], contact_y_m=feet[1], contact_z_m=SERVE_Z_M)  # for its rough speed
         row.update(frame=fs, timestamp=round(float(ts[fs]), 4), player_id=pid, team=team,
                    shuttle_x_px=px[start, 0], shuttle_y_px=px[start, 1], shot_type="serve", landing_kind="intercept",
                    end_frame=f1, speed_method="serve", sure=False, serve=True, turn_deg=0.0)
@@ -631,12 +635,17 @@ SMASH_Z_M = 1.4       # 1000 px of frame height) and contact height for a smash.
                       # types were right 9 % of the time and a classifier for all 6 types barely beat "always
                       # lift" (60 vs 57 %), so only the smash is shown
 LINE_SIDE_M = 0.8     # line_of: hitter and receiver must each stand this far from the centre line
+ROUGH_KMH = (15.0, 250.0)  # rough speeds (speed_shown_kmh) are clipped to this (fits on the clip: 12-199)
+FLIGHT_AVG_MAX_KMH = 100.0  # a whole flight averaging more is two hits paired wrongly (8-11 m in 0.2-0.3 s
+                            # on the user's clip: a false hit or a serve found too late), not a speed
 
 
 def shown_types(df, shuttle, frame_h):
-    """shown_type ("smash" or None) and line ("straight" / "cross" / None) per hit, for the HUD."""
+    """shown_type ("smash" or None), line ("straight" / "cross" / None) and a speed for every hit
+    (speed_shown_kmh, speed_src), for the HUD."""
     if df.empty:
         return df
+    df = df.sort_values("frame", ignore_index=True)
     real = (shuttle.visible & ~shuttle.interpolated & ~shuttle.inpainted).to_numpy()
     P = np.where(real[:, None], shuttle[["x_px", "y_px"]].to_numpy(float), np.nan)
     vy = []
@@ -654,6 +663,38 @@ def shown_types(df, shuttle, frame_h):
     a, b = df.contact_x_m - COURT_W / 2, tgt - COURT_W / 2
     sure = (a.abs() > LINE_SIDE_M) & (b.abs() > LINE_SIDE_M)
     df["line"] = np.where(sure & (a * b > 0), "straight", np.where(sure & (a * b < 0), "cross", None))
+    df.loc[df.serve.fillna(False).astype(bool), "line"] = None  # a serve always goes across
+    return rough_speeds(df, 1 / np.median(np.diff(shuttle.timestamp)))
+
+
+def rough_speeds(df, fps):
+    """A speed for every hit (the user: every shot shows one, rough is fine), best source first:
+    fit = the physical flight fit (sure); flight = straight distance to the next contact (or the
+    landing) over the flight time, undone for drag (on the 21 fitted hits of the user's clip it
+    tracked the fit with r 0.65, median ratio 0.92); window = the 0.1 s fallback (3-409 km/h);
+    typical = this match's median of the others (smash / not), when nothing at all was seen."""
+    c0 = df[["contact_x_m", "contact_y_m", "contact_z_m"]].to_numpy(float)
+    dt = (df.timestamp.shift(-1) - df.timestamp).to_numpy(float, copy=True)
+    c1 = np.roll(c0, -1, axis=0)
+    land = np.c_[df.landing_x, df.landing_y, np.zeros(len(df))]
+    t_land = (df.end_frame - df.frame).to_numpy(float) / fps
+    last = ~(dt < MISSED_HIT_S)  # no next contact in this flight: to the landing
+    c1[last], dt[last] = land[last], t_land[last]
+    dist = np.linalg.norm(c1 - c0, axis=1)
+    ok = np.isfinite(dist) & (dt > 0.1) & (dt < MISSED_HIT_S)
+    ok[ok] = dist[ok] / dt[ok] * 3.6 <= FLIGHT_AVG_MAX_KMH
+    flight = np.full(len(df), np.nan)
+    flight[ok] = [from_window_avg(d / t, t) * 3.6 for d, t in zip(dist[ok], dt[ok])]
+    fit = df.speed_kmh_est.where(df.sure.fillna(False).astype(bool)).to_numpy(float)
+    win = df.speed_kmh_est.to_numpy(float, copy=True)
+    kmh = np.where(np.isfinite(fit), fit, np.where(np.isfinite(flight), flight, win))
+    src = np.where(np.isfinite(fit), "fit", np.where(np.isfinite(flight), "flight", np.where(np.isfinite(win), "window", "typical")))
+    kmh = np.clip(kmh, *ROUGH_KMH)
+    smash = (df.shown_type == "smash").to_numpy()
+    for grp in (smash, ~smash):
+        known = np.isfinite(kmh) & grp
+        kmh[grp & ~known] = np.median(kmh[known]) if known.any() else np.nanmedian(kmh) if np.isfinite(kmh).any() else 100.0
+    df["speed_shown_kmh"], df["speed_src"] = np.round(kmh), src
     return df
 
 

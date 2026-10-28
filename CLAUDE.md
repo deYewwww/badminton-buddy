@@ -172,3 +172,12 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   (hits.shown_types: image downward speed after the hit > SMASH_VY and contact > 1.4 m: 6/10 found,
   2 wrong) plus 直線/斜線（推測） from the hitter's vs the next contact's side of the centre line
   (unchecked: no truth). shot_type stays for scoring/stamina.
+- Every shot shows a speed now (user, 2026-10-28): hits.rough_speeds -> speed_shown_kmh / speed_src: fit (sure),
+  flight (straight distance to the next contact or landing over the flight time, drag undone; r 0.65 vs
+  the fit, flights averaging > 100 km/h rejected as mis-paired hits), window, typical (match median,
+  ~40 of 194 hits: nothing seen after the hit). Clipped 15-250. HUD shows "≈" + 球速（約） unless fitted.
+  Recovered serves get the server's feet as contact (z 1.1 m).
+- HUD polish (user: shuttle effect not flashy, turning like the foot rings but not the same): shuttle =
+  white dot + 3 turning arcs (upright circle, 1.2 s a turn) + 0.25 s tail, drawn over the name tags;
+  speed beside it as plain shadowed text for 1 s (was a LOCK ON box); name tags 132x34 (name + thin
+  stamina bar, number only in the player panel); MOVE target = one dashed floor circle + small label.
