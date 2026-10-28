@@ -237,6 +237,22 @@ def test_score():
     assert score.game_over(29, 29, cfg["score"]) is False and score.game_over(30, 29, cfg["score"])
 
 
+
+def test_our_shuttle():
+    from hud.visualization.render import our_shuttle
+    F = 60
+    P = np.full((F, 2), np.nan)
+    box = np.full((F, 4, 4), np.nan)
+    box[:, 0] = [500, 500, 600, 800]           # one of our players
+    P[0:10] = np.c_[np.linspace(560, 900, 10), np.full(10, 450)]    # leaves his racket
+    P[12:20] = np.c_[np.linspace(960, 1200, 8), np.full(8, 450)]    # same flight, after a short gap
+    P[20:30] = np.c_[np.linspace(50, 300, 10), np.full(10, 400)]    # next court: jumps away, no player near
+    P[40:55] = [700, 900]                                           # spare shuttle lying still
+    out = our_shuttle(P, box, 30, 1080)
+    kept = np.isfinite(out[:, 0])
+    assert kept[0:10].all() and kept[12:20].all() and not kept[20:30].any() and not kept[40:55].any()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
