@@ -155,6 +155,31 @@ def hit_marks(mid, t=None, kind=None, shot=None):
     return json.loads(df.to_json(orient="records"))
 
 
+def hard_examples(mid, t=None, kind=None, ok=None):
+    """Editor ⑧: the moments `hud report` picked (hard_examples.csv) with the user's verdicts
+    (hard_review.csv: t, kind, ok), and hud_t, where each sits in the HUD video (rendered at the
+    nominal frame rate, so it drifts from real time on a variable-frame-rate clip). A verdict
+    given (t, kind, ok true/false/None to clear) is saved first."""
+    d = match_dir(mid)
+    f = d / "hard_review.csv"
+    rv = pd.read_csv(f) if f.exists() else pd.DataFrame(columns=["t", "kind", "ok"])
+    if t is not None:
+        rv = rv[~(((rv.t - float(t)).abs() < 0.01) & (rv.kind == kind))]
+        if ok is not None:
+            rv = pd.concat([rv, pd.DataFrame([dict(t=round(float(t), 2), kind=kind, ok=bool(ok))])])
+        rv.sort_values("t").to_csv(f, index=False)
+    hx = d / "hard_examples.csv"
+    if not hx.exists():
+        return {"items": [], "error": "還沒有抽查清單：先在終端機跑 uv run hud report out/<影片>"}
+    from hud.media.video import probe
+    fps = probe(video_of(mid))[2]
+    items = pd.read_csv(hx)
+    items["hud_t"] = (items.frame / fps).round(3)
+    items = items.merge(rv, on=["t", "kind"], how="left")
+    items["ok"] = items.ok.astype(object).where(items.ok.notna(), None)
+    return {"items": json.loads(items.to_json(orient="records"))}
+
+
 def manual_point(mid, t, team):
     """Add a point at video time t (s) for a rally the analysis missed, or remove the one at t
     (team='remove'). Stored in manual_points.csv; takes effect on the next rallies rerun."""
@@ -277,6 +302,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.wfile.write(jpg.tobytes())
             if u.path == "/api/video":  # the original upload (hit marking: no HUD numbers to sway the count)
                 return self._file(video_of(q["id"]))
+            if u.path == "/api/hard":
+                return self._json(hard_examples(q["id"]))
             if u.path == "/api/hitmarks":
                 return self._json(hit_marks(q["id"]))
             if u.path == "/api/status":
@@ -372,6 +399,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "n": finetune.save_label(match_dir(mid), b["f"], b.get("x", 0), b.get("y", 0), b["state"])})
             if u.path == "/api/hitmark":  # {t, kind: serve/hit/end/remove, shot: smash/clear/drop/drive/net/lift}
                 return self._json(hit_marks(mid, b["t"], b["kind"], b.get("shot")))
+            if u.path == "/api/hardreview":  # {t, kind, ok: true/false/null}
+                return self._json(hard_examples(mid, b["t"], b["kind"], b.get("ok")))
             if u.path == "/api/point":  # {t, team: us/opp/remove}
                 return self._json({"ok": True, "n": manual_point(mid, b["t"], b["team"])})
             self._json({"error": "not found"}, 404)

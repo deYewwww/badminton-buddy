@@ -116,6 +116,27 @@ def test_swaps():
     assert out.player_id.tolist() == ["P1", "P2", "P2", "P1"]
 
 
+
+def test_frame_times_skip_discarded_packets():
+    """A clip cut with -c copy keeps the GOP's earlier frames as discarded pre-roll packets
+    (negative times, flag D), like the user's iPhone clip: frame_times must give one time per
+    decoded frame, starting at 0, evenly spaced (they used to start 0.5 s early here)."""
+    import subprocess
+    import tempfile
+    from pathlib import Path
+    from hud.media.video import describe, frame_times, frames
+    d = Path(tempfile.mkdtemp())
+    run = lambda *a: subprocess.run(["ffmpeg", "-v", "error", "-y", *a], check=True)
+    run("-f", "lavfi", "-i", "testsrc=size=160x90:rate=30", "-t", "3", "-c:v", "libx264", "-g", "30", "-bf", "2", str(d / "a.mp4"))
+    run("-ss", "0.5", "-i", str(d / "a.mp4"), "-c", "copy", str(d / "b.mp4"))
+    t = frame_times(d / "b.mp4")
+    n = sum(1 for _ in frames(str(d / "b.mp4"), (160, 90)))
+    assert len(t) == n and t[0] == 0 and abs(np.diff(t) - 1 / 30).max() < 1e-3, (len(t), n, t[:3])
+    info = describe(d / "b.mp4")
+    assert info["discarded"] > 0 and info["frames"] == n and info["packets"] == n + info["discarded"]
+    assert not info["warnings"], info["warnings"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
