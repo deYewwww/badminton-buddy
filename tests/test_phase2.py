@@ -187,7 +187,7 @@ def test_finetune_score():
     hm[3, 5] = _target((10, 10))      # nothing there
     Y = np.array([(101, 52), (200, 100), (260, 180), (np.nan, np.nan)], np.float32)
     s = score(hm, Y, np.array([3, 3, 0, 5]))
-    assert (s["tp"], s["fn"], s["fp"], s["tn"]) == (1, 2, 2, 0), s
+    assert (s["tp"], s["fn"], s["fp"], s["tn"], s["fp_empty"]) == (1, 2, 2, 0, 1), s
 
 
 if __name__ == "__main__":

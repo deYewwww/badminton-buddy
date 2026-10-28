@@ -39,7 +39,7 @@ LOCK_S, BANNER_S = 1.0, 1.6
 SCORE_DELAY_S = 1.0          # score + 得分 banner 1 s after the rally ends (the user: once the shuttle is down,
                              # not as soon as the track stops, and well before the next serve)
 COST_S = 0.9                 # stroke-cost popup on the name tag
-TRAIL_S = 0.5                # shuttle tail (the yellow line behind the reticle), seconds
+TRAIL_S = 0.25               # shuttle tail (the yellow line behind the reticle), seconds: 0.5 s was "too long"
 FILL_MAX_S = 0.8             # longest hidden stretch of a flight bridged by the flight curve (fill_flights)
 FILL_MIN_SEEN = 2            # ... and only on flights with at least this many real sightings
 HIT_GAP_S = 3.0              # hits further apart than this are separate bursts of play ...
@@ -470,10 +470,12 @@ class Hud:
         while run > 0 and np.isfinite(P[run - 1, 0]):
             run -= 1
         Q = P[run:]
+        if len(Q) >= 3:  # a smooth thin line (like the foot rings): 3-point average, drawn at sub-pixel precision
+            Q = np.r_[Q[:1], (Q[:-2] + Q[1:-1] + Q[2:]) / 3, Q[-1:]]
         for k in range(1, len(Q)):
             w = k / max(len(Q) - 1, 1)
-            col = tuple(int(c * (0.35 + 0.65 * w)) for c in YELLOW)
-            cv2.line(img, tuple(np.int32(Q[k - 1])), tuple(np.int32(Q[k])), col, max(1, int((1 + 2 * w) * u)), cv2.LINE_AA)
+            col = tuple(int(c * (0.3 + 0.7 * w)) for c in YELLOW)  # fades towards its end
+            cv2.line(img, tuple(np.int32(Q[k - 1] * 4)), tuple(np.int32(Q[k] * 4)), col, max(1, int(2 * u)), cv2.LINE_AA, 2)
         x, y = np.int32(P[-1])
         cv2.circle(img, (int(x), int(y)), max(3, int(8 * u)), (255, 255, 255), max(1, int(2 * u)), cv2.LINE_AA)
         a, b, t = int(24 * u), int(9 * u), max(1, int(3 * u))

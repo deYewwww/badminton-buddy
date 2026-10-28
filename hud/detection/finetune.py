@@ -11,7 +11,9 @@ teach it this hall.
   3. run(): every labelled frame becomes one 8-frame TrackNet window with that frame at a random
      place in it; the loss is taken on that frame's heatmap only (the others are unlabelled).
      "none" frames are negatives: they teach it to leave shirts and lights alone. "hidden" (behind
-     a player) is left out. A fixed 20 % of the labels is held out; the fine-tuned weights are kept
+     a player) is left out. add_negatives() adds frames outside play (half where TrackNet "saw"
+     something there): the first run had 3 negatives in 300 labels, and the adopted net fired
+     outside play in 31 % of frames (pretrained 11.5 %), doubling the hits (159 -> 318). A fixed 20 % of the labels is held out; the fine-tuned weights are kept
      only if they beat the pretrained ones there (models/tracknetv3/TrackNet_ft.pt, used by
      shuttle._load_models when present).
 """
@@ -44,33 +46,59 @@ def todo(out_dir, n=N_LABELS, seed=0):
     p = paths(out_dir)
     if p["todo"].exists():
         return json.loads(p["todo"].read_text())
+    sh, play, real = _play(out_dir)
+    rng = np.random.default_rng(seed)
+    pick = sorted(_spread(np.flatnonzero(play & real), n // 2, rng) + _spread(np.flatnonzero(play & ~real), n // 2, rng))
+    out = _entries(sh, real, pick)
+    p["todo"].write_text(json.dumps(out))
+    return out
+
+
+def _play(out_dir):
     from hud.pipeline import paths as mp
     from hud.visualization.render import hit_groups
     m = mp(out_dir)
     sh, hits = pd.read_parquet(m["shuttle"]), pd.read_parquet(m["hits"])
     fps = 1 / np.median(np.diff(sh.timestamp))
-    F = len(sh)
-    play = np.zeros(F, bool)
+    play = np.zeros(len(sh), bool)
     for fr in hit_groups(hits, fps):
-        play[max(0, int(fr[0] - 0.3 * fps)):min(F, int(fr[-1] + 1.5 * fps))] = True
-    real = (sh.visible & ~sh.interpolated & ~sh.inpainted).to_numpy()
+        play[max(0, int(fr[0] - 0.3 * fps)):min(len(sh), int(fr[-1] + 1.5 * fps))] = True
+    return sh, play, (sh.visible & ~sh.interpolated & ~sh.inpainted).to_numpy()
+
+
+def _spread(pool, n, rng, gap=5):
+    """Up to n frames of pool, no two within gap frames (near-duplicates teach nothing)."""
+    got = []
+    for f in rng.permutation(pool):
+        if all(abs(f - g) > gap for g in got):
+            got.append(int(f))
+        if len(got) == n:
+            break
+    return got
+
+
+def _entries(sh, real, pick, **extra):
+    return [dict(f=f, t=round(float(sh.timestamp.iat[f]), 3), **extra,
+                 hint=[round(float(sh.x_px.iat[f]), 1), round(float(sh.y_px.iat[f]), 1)] if real[f] else None)
+            for f in pick]
+
+
+def add_negatives(out_dir, n=150, seed=1):
+    """Append n frames from outside play to the frames to label (once): half where TrackNet saw
+    something (its usual false alarms: shirts, lights, a shuttle carried about), half anywhere.
+    Most are answered with N in the editor. -> how many were added."""
+    p = paths(out_dir)
+    cur = todo(out_dir)
+    if any(e.get("neg") for e in cur):
+        return 0
+    sh, play, real = _play(out_dir)
+    have = {e["f"] for e in cur}
     rng = np.random.default_rng(seed)
-    pick = []
-    for pool in (np.flatnonzero(play & real), np.flatnonzero(play & ~real)):
-        pool = rng.permutation(pool)
-        got = []
-        for f in pool:  # spread out: no two within 5 frames (near-duplicates teach nothing)
-            if all(abs(f - g) > 5 for g in got):
-                got.append(int(f))
-            if len(got) == n // 2:
-                break
-        pick += got
-    pick.sort()
-    out = [dict(f=f, t=round(float(sh.timestamp.iat[f]), 3),
-                hint=[round(float(sh.x_px.iat[f]), 1), round(float(sh.y_px.iat[f]), 1)] if real[f] else None)
-           for f in pick]
-    p["todo"].write_text(json.dumps(out))
-    return out
+    free = lambda m: np.array([f for f in np.flatnonzero(m) if f not in have], int)
+    pick = sorted(_spread(free(~play & real), n // 2, rng) + _spread(free(~play & ~real), n - n // 2, rng))
+    cur += _entries(sh, real, pick, neg=True)
+    p["todo"].write_text(json.dumps(cur))
+    return len(pick)
 
 
 def labels(out_dir):
@@ -175,7 +203,7 @@ def _target(q):
 
 def score(pred, Y, K):
     """pred (N, 8, H, W) heatmaps -> dict(tp, fn, fp, tn, recall, precision) on the labelled frames."""
-    tp = fn = fp = tn = 0
+    tp = fn = fp = tn = fp_empty = 0
     for hm, q, k in zip(pred, Y, K):
         c = S._locate((hm[k] > 0.5).astype(np.uint8))
         if np.isfinite(q[0]):
@@ -186,8 +214,10 @@ def score(pred, Y, K):
                 fp += c is not None
         else:
             fp += c is not None
+            fp_empty += c is not None
             tn += c is None
-    return dict(tp=tp, fn=fn, fp=fp, tn=tn, recall=round(tp / max(tp + fn, 1), 3),
+    # fp_empty: fired on a frame with no shuttle (the failure that doubled the hits)
+    return dict(tp=tp, fn=fn, fp=fp, tn=tn, fp_empty=fp_empty, recall=round(tp / max(tp + fn, 1), 3),
                 precision=round(tp / max(tp + fp, 1), 3))
 
 
@@ -219,8 +249,8 @@ def run(out_dir, epochs=6, lr=1e-4, bs=2, seed=0):
     0.54); later epochs risk learning the labels by heart."""
     import torch
     p = paths(out_dir)
-    if not p["samples"].exists():
-        build(out_dir, seed)
+    if not p["samples"].exists() or p["labels"].stat().st_mtime > p["samples"].stat().st_mtime:
+        build(out_dir, seed)  # new labels since the samples were built
     X, Y, K, hold = _samples(p)
     ho = np.flatnonzero(hold)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -253,7 +283,8 @@ def run(out_dir, epochs=6, lr=1e-4, bs=2, seed=0):
             tot += float(loss.detach()) * len(b)
         net.eval()
         now = score(_predict(net, X, ho, device), Y[ho], K[ho])
-        good = now["recall"] > best["recall"] and now["precision"] >= before["precision"] - 0.02
+        good = (now["recall"] > best["recall"] and now["precision"] >= before["precision"] - 0.02
+                and now["fp_empty"] <= before["fp_empty"])  # never more false alarms on empty frames
         if good:  # the best epoch so far, kept on the CPU
             best, best_w = now, {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         print(f"epoch {ep + 1}/{epochs}: loss {tot / len(tr):.5f}  held-out {now}" + ("  <- best so far" if good else ""))
