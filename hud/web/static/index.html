@@ -689,6 +689,7 @@ function lblShow() {
   if (!it) return lblMsg(`全部 ${LB.list.length} 張都看過了（已標 ${lblCount()} 張）。在終端機跑 uv run hud finetune out/${M.id}`);
   lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張…載入中`);
   LB.img.onload = () => { lblDraw(); lblMsg(`第 ${LB.k + 1} / ${LB.list.length} 張（${fmt(it.t)}），已標 ${lblCount()} 張`); };
+  LB.img.onerror = () => lblMsg(LB_DOWN);
   LB.img.src = `/api/label/frame?id=${M.id}&f=${it.f}`;
 }
 function lblScale() { return lbl.width / LB.img.naturalWidth; }
@@ -705,9 +706,11 @@ function lblDraw() {
     else lctx.fillText(done.state === "none" ? "已標：沒有羽球" : "已標：被擋住", 12, 24);
   }
 }
+// the editor's server stops with the terminal it runs in (closing that tab, an app restart): say so
+const LB_DOWN = "連不上 hud web（伺服器停了？）。已標的都存好了：在終端機重新跑 uv run hud web，重新整理這頁，按「開始標記」會從沒標的那張繼續。";
 async function lblSave(state, x = 0, y = 0) {
   const it = LB.list[LB.k];
-  await api("/api/label", {id:M.id, f:it.f, x, y, state});
+  try { await api("/api/label", {id:M.id, f:it.f, x, y, state}); } catch (e) { return lblMsg(LB_DOWN); }
   LB.labels[it.f] = {frame:it.f, x, y, state};
   LB.k++; lblShow();
 }
