@@ -76,6 +76,9 @@ def run(out_dir, video=None, draw=True):
             warn.append("沒有找到任何擊球：回合、拍數、比分都會是空的。先修好上面的問題。")
     if p["rallies"].exists():
         rep["rallies"] = len(pd.read_parquet(p["rallies"]))
+    from hud.media.video import describe
+    rep["video"] = describe(video)  # timing of the frames the stages used (frame_times)
+    warn += rep["video"]["warnings"]
     rep["warnings"] = warn
     p["check"].write_text(json.dumps(rep, ensure_ascii=False, indent=1, default=str))
     if draw:

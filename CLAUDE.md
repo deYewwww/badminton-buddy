@@ -186,4 +186,10 @@ docs/HANDOFF.md (where the last cloud session left off and what is next).
   of one of our players or follows on from such a run (<= 0.4 s, at a shuttle's pace), and drops runs that
   hardly move (floor / held); the tail never joins across a jump. Drawing only: hits still see every shuttle
   (a false 15 km/h hit at 240.56 s sits on that jump).
+- Timestamps (2026-10-28, audit step 1, docs/speed_audit.md R1): frame_times now drops packets flagged D
+  (outside the edit list, never decoded). IMG_9840 has 14 pre-roll packets at -0.9..0 s + 1 at the end:
+  every time used to be 0.433 s late and there were 15 times too many; now all 13169 equal the decoded
+  frames' (showinfo). Speeds were unaffected (differences), video-time joins (hit marks, editor seek) were.
+  `hud check` writes a video index (hash, nominal/measured fps, discarded, irregular/dropped intervals).
+  Results made before this keep the old times until their players/shuttle stages are re-run.
 

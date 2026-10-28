@@ -32,15 +32,66 @@ def probe(path):
     return w, h, num / den if den else 30.0, int(s.get("nb_read_packets", 0))
 
 
-def frame_times(path):
-    """Per-frame timestamps (s), correct for variable-frame-rate phone clips. Read from the
-    container's packet times (sorted: B-frames are stored out of order), nothing decoded."""
+def _packets(path):
+    """(pts, discarded) of every video packet, in file order. Discarded (flag D): outside the
+    edit list, so never decoded: an iPhone clip starts with ~14 of them at negative times."""
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                          "packet=pts_time", "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
-    t = sorted(float(x) for x in out.split() if x.strip() and x.strip() != "N/A")
-    if not t:
+                          "packet=pts_time,flags", "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    rows = [r.split(",") for r in out.split() if r.strip()]
+    rows = [(float(r[0]), "D" in (r[1] if len(r) > 1 else "")) for r in rows if r[0] not in ("", "N/A")]
+    return np.array([r[0] for r in rows]), np.array([r[1] for r in rows], bool)
+
+
+def frame_times(path):
+    """Per-frame timestamps (s) of the frames the decoder really outputs, correct for
+    variable-frame-rate phone clips. From the container's packet times (sorted: B-frames are
+    stored out of order), nothing decoded. Discarded packets are left out: counting them put
+    every time on the user's iPhone clip 0.43 s late (14 pre-roll packets at -0.9..0 s) and
+    gave 15 times too many; without them all 13169 times equal the decoded frames' (ffmpeg
+    showinfo, < 1 us)."""
+    pts, gone = _packets(path)
+    t = np.sort(pts[~gone])
+    if not len(t):
         raise SystemExit(f"No frames could be read from {path}")
-    return list(np.array(t) - t[0])
+    return list(t - t[0])
+
+
+def describe(path):
+    """Video index for the check report: what the file says about its timing next to the frames it
+    really has, and warnings when they disagree. Measures, never fixes."""
+    import hashlib
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=codec_name,profile,pix_fmt,r_frame_rate,avg_frame_rate", "-of", "json", str(path)],
+                         capture_output=True, text=True)
+    s = (json.loads(out.stdout or "{}").get("streams") or [{}])[0]
+    rate = lambda r: (lambda a, b: a / b if b else None)(*(int(x) for x in r.split("/"))) if r else None
+    pts, gone = _packets(path)
+    t = np.array(frame_times(path))
+    d = np.diff(t)
+    med = float(np.median(d)) if len(d) else float("nan")
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    w, ht, fps_tag, _ = probe(path)
+    nominal = rate(s.get("r_frame_rate"))
+    info = dict(sha256=h.hexdigest(), codec=s.get("codec_name"), profile=s.get("profile"), pix_fmt=s.get("pix_fmt"),
+                size=[w, ht], fps_nominal=round(nominal, 3) if nominal else None, fps_avg_tag=round(fps_tag, 3),
+                fps_measured=round(1 / med, 3), packets=len(pts), frames=len(t), discarded=int(gone.sum()),
+                duration_s=round(float(t[-1]), 3) if len(t) else 0.0, interval_ms=dict(
+                    median=round(med * 1000, 2), min=round(float(d.min()) * 1000, 2), max=round(float(d.max()) * 1000, 2)),
+                irregular=int((np.abs(d - med) > 0.25 * med).sum()), dropped=int((d > 1.5 * med).sum()))
+    warn = []
+    if nominal and abs(nominal * med - 1) > 0.02:
+        warn.append(f"標示的幀率 {nominal:.2f} 和實際間隔 {1 / med:.2f} fps 不同：時間一律用實際時間戳。")
+    if info["irregular"] > 0.01 * len(d):
+        warn.append(f"可變幀率：{info['irregular']} 個間隔偏離中位數 25% 以上（已用每格真實時間，不用名義 fps）。")
+    if info["dropped"]:
+        warn.append(f"{info['dropped']} 處間隔超過 1.5 格，可能掉格：那裡的速度用到的時間差會比較長。")
+    if 1 / med >= 100:
+        warn.append("高幀率檔（慢動作）：確認時間戳是拍攝時間而不是播放時間，再拿來算速度。")
+    info["warnings"] = warn
+    return info
 
 
 @lru_cache(maxsize=32)
