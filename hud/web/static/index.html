@@ -128,7 +128,8 @@
       速度 <select id="hmRate"><option>0.25</option><option selected>0.5</option><option>1</option></select>
       <span id="hmMsg" class="hint">播原始影片（沒有 HUD，避免被畫面上的拍數影響）。</span></div>
     <div id="hmKeys" class="row hint" style="display:none">
-      <b>S</b> 開球（發球拍到球的那一下）　<b>空白鍵</b> 擊球（之後每一拍）　<b>E</b> 回合結束（球落地／死球）
+      <b>S</b> 開球（發球拍到球的那一下）　每一拍按球種：<b>1</b> 殺球　<b>2</b> 高遠球　<b>3</b> 吊球　<b>4</b> 平抽
+      　<b>5</b> 網前（搓、推、放網）　<b>6</b> 挑球／擋球　<b>空白鍵</b> 擊球但不確定球種　<b>E</b> 回合結束（球落地／死球）
       ｜ <b>P</b> 暫停／播放　<b>←</b> 倒退 2 秒　<b>Backspace</b> 刪掉上一個標記　<b>Esc</b> 結束</div>
     <video id="hmv" playsinline style="display:none"></video>
   </section>
@@ -767,10 +768,13 @@ function hmStatus() {
   const shots = 1 + m.filter(x => x.kind === "hit" && x.t > s.t).length;
   hmMsg(open ? `回合進行中：${fmt(s.t)} 開球，第 ${shots} 拍。　已完成 ${done} 個回合` : `已完成 ${done} 個回合。等下一次開球按 S。`);
 }
-async function hmMark(kind) {
+const SHOT = {"1":"smash", "2":"clear", "3":"drop", "4":"drive", "5":"net", "6":"lift"};
+const SHOT_ZH = {smash:"殺球", clear:"高遠球", drop:"吊球", drive:"平抽", net:"網前", lift:"挑球／擋球"};
+async function hmMark(kind, shot) {
   const t = hmv.currentTime;
-  HM.marks = await api("/api/hitmark", {id:M.id, t, kind});
+  HM.marks = await api("/api/hitmark", {id:M.id, t, kind, shot});
   hmStatus();
+  if (shot) hmMsg($("#hmMsg").textContent + `（${SHOT_ZH[shot]}）`);
 }
 async function hmUndo() {
   const last = HM.marks.filter(x => x.t <= hmv.currentTime + 0.05).pop();
@@ -790,7 +794,7 @@ $("#hmRate").onchange = () => { hmv.playbackRate = +$("#hmRate").value; };
 hmv.onplay = () => { hmv.playbackRate = +$("#hmRate").value; };
 window.addEventListener("keydown", e => {
   if (!HM.on || REV.on || LB.on || document.activeElement.tagName === "INPUT") return;
-  const f = {s:() => hmMark("serve"), S:() => hmMark("serve"), " ":() => hmMark("hit"), e:() => hmMark("end"), E:() => hmMark("end"),
+  const f = SHOT[e.key] ? () => hmMark("hit", SHOT[e.key]) : {s:() => hmMark("serve"), S:() => hmMark("serve"), " ":() => hmMark("hit"), e:() => hmMark("end"), E:() => hmMark("end"),
     p:() => hmv.paused ? hmv.play() : hmv.pause(), P:() => hmv.paused ? hmv.play() : hmv.pause(),
     ArrowLeft:() => { hmv.currentTime = Math.max(0, hmv.currentTime - 2); }, Backspace:hmUndo,
     Escape:() => { HM.on = false; hmv.pause(); $("#hmKeys").style.display = "none"; hmMsg(`已標 ${HM.marks.filter(x => x.kind === "end").length} 個回合（都存好了，隨時可以繼續）。`); }}[e.key];

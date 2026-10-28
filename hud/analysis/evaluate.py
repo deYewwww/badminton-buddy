@@ -34,12 +34,13 @@ def truth_from_marks(path):
     rallies, hits, cur = [], [], None
     for r in df.itertuples():
         if r.kind == "serve":
-            cur = dict(start=float(r.t), hits=[float(r.t)])
+            cur = dict(start=float(r.t), hits=[float(r.t)], types=["serve"])
         elif r.kind == "hit" and cur is not None:
             cur["hits"].append(float(r.t))
+            cur["types"].append(getattr(r, "shot", None) if isinstance(getattr(r, "shot", None), str) else None)
         elif r.kind == "end" and cur is not None:
             rallies.append(dict(start=cur["start"], end=float(r.t), winner=None, shots=len(cur["hits"])))
-            hits += [dict(t=t, team=None) for t in cur["hits"]]
+            hits += [dict(t=t, team=None, shot=k) for t, k in zip(cur["hits"], cur["types"])]
             cur = None
     return dict(rallies=rallies, hits=hits, hit_windows=[[r["start"] - 0.3, r["end"] + 0.3] for r in rallies])
 RALLY_IOU = 0.3
